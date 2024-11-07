@@ -1,5 +1,4 @@
-
-== Nateclipse
+## Nateclipse
 
 This Eclipse plugin improves your tabs:
 
@@ -9,7 +8,7 @@ This Eclipse plugin improves your tabs:
 
 It's not applied to all tabs when Eclipse loads, tabs need to be focused once. It's janky, but it works.
 
-== Screenshots
+## Screenshots
 
 Before:
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/before.png?raw=true)
