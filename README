@@ -1,0 +1,10 @@
+
+== Nateclipse
+
+This Eclipse plugin improves your tabs:
+
+* Removes the `.java` suffix so tabs are shorter.
+* Removes the close button so tabs are shorter.
+* Increases the number of characters for a tab to be truncated with a ellipsis to 100 so tabs are longer, but you can actually tell them apart.
+
+It's not applied to all tabs when Eclipse loads, tabs need to be focused once. It's janky, but it works.
