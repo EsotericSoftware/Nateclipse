@@ -8,6 +8,10 @@ This Eclipse plugin improves your tabs:
 
 It's not applied to all tabs when Eclipse loads, tabs need to be focused once. It's janky, but it works.
 
+## Installation
+
+Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases) and put it in your `Eclipse/dropins` folder.
+
 ## Screenshots
 
 Before:
