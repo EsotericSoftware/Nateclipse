@@ -9,25 +9,36 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.ui.IEditorPart;
 import org.eclipse.ui.IPartListener2;
+import org.eclipse.ui.IURIEditorInput;
 import org.eclipse.ui.IWorkbenchPart;
 import org.eclipse.ui.IWorkbenchPartReference;
 import org.eclipse.ui.PlatformUI;
-import org.eclipse.ui.part.FileEditorInput;
 
 public class JavaTabLabelModifier implements IPartListener2 {
 	@Override
 	public void partOpened (IWorkbenchPartReference partRef) {
-		if (partRef.getPart(false) instanceof IEditorPart editor && editor.getEditorInput() instanceof FileEditorInput) {
-			String title = editor.getEditorInput().getName();
-			String uniqueTitle = title + "___nateclipse___";
-			setTitle(partRef, uniqueTitle);
-			findTabFolders(partRef, uniqueTitle);
-			if (title.endsWith(".java")) title = title.substring(0, title.length() - 5);
-			setTitle(partRef, title);
+		IEditorPart e = (IEditorPart)partRef.getPart(false);
+		if (partRef.getPart(false) instanceof IEditorPart editor && editor.getEditorInput() instanceof IURIEditorInput) {
+			// When opened.
+			fixTitle(partRef, editor);
+
+			// When saved.
+			editor.addPropertyListener( (source, propId) -> {
+				if (propId == IEditorPart.PROP_DIRTY && !editor.isDirty()) fixTitle(partRef, editor);
+			});
 		}
 	}
 
-	static public void setTitle (IWorkbenchPartReference partRef, String title) {
+	static void fixTitle (IWorkbenchPartReference partRef, IEditorPart editor) {
+		String title = editor.getEditorInput().getName();
+		String uniqueTitle = title + "___nateclipse___";
+		setTitle(partRef, uniqueTitle);
+		findTabFolders(partRef, uniqueTitle);
+		if (title.endsWith(".java")) title = title.substring(0, title.length() - 5);
+		setTitle(partRef, title);
+	}
+
+	static void setTitle (IWorkbenchPartReference partRef, String title) {
 		try {
 			Object model = partRef.getClass().getMethod("getModel").invoke(partRef, (Object[])null);
 			model.getClass().getMethod("setLabel", String.class).invoke(model, title);
@@ -36,7 +47,7 @@ public class JavaTabLabelModifier implements IPartListener2 {
 		}
 	}
 
-	static public void findTabFolders (IWorkbenchPartReference partRef, String title) {
+	static void findTabFolders (IWorkbenchPartReference partRef, String title) {
 		IWorkbenchPart part = partRef.getPart(false);
 		if (part != null && part.getSite() != null) {
 			Composite parent = part.getSite().getShell();
