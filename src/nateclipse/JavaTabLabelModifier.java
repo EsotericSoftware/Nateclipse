@@ -17,7 +17,6 @@ import org.eclipse.ui.PlatformUI;
 public class JavaTabLabelModifier implements IPartListener2 {
 	@Override
 	public void partOpened (IWorkbenchPartReference partRef) {
-		IEditorPart e = (IEditorPart)partRef.getPart(false);
 		if (partRef.getPart(false) instanceof IEditorPart editor && editor.getEditorInput() instanceof IURIEditorInput) {
 			// When opened.
 			fixTitle(partRef, editor);
