@@ -12,9 +12,8 @@ import org.eclipse.ui.IPartListener2;
 import org.eclipse.ui.IURIEditorInput;
 import org.eclipse.ui.IWorkbenchPart;
 import org.eclipse.ui.IWorkbenchPartReference;
-import org.eclipse.ui.PlatformUI;
 
-public class JavaTabLabelModifier implements IPartListener2 {
+public class TabLabelModifier implements IPartListener2 {
 	@Override
 	public void partOpened (IWorkbenchPartReference partRef) {
 		if (partRef.getPart(false) instanceof IEditorPart editor && editor.getEditorInput() instanceof IURIEditorInput) {
@@ -83,37 +82,5 @@ public class JavaTabLabelModifier implements IPartListener2 {
 			}
 		}
 		return false;
-	}
-
-	@Override
-	public void partActivated (IWorkbenchPartReference partRef) {
-	}
-
-	@Override
-	public void partDeactivated (IWorkbenchPartReference partRef) {
-	}
-
-	@Override
-	public void partBroughtToTop (IWorkbenchPartReference partRef) {
-	}
-
-	@Override
-	public void partClosed (IWorkbenchPartReference partRef) {
-	}
-
-	@Override
-	public void partHidden (IWorkbenchPartReference partRef) {
-	}
-
-	@Override
-	public void partVisible (IWorkbenchPartReference partRef) {
-	}
-
-	@Override
-	public void partInputChanged (IWorkbenchPartReference partRef) {
-	}
-
-	static public void register () {
-		PlatformUI.getWorkbench().getActiveWorkbenchWindow().getPartService().addPartListener(new JavaTabLabelModifier());
 	}
 }

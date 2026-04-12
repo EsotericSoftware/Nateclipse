@@ -12,7 +12,7 @@ public class Activator extends AbstractUIPlugin implements IStartup {
 	@Override
 	public void earlyStartup () {
 		PlatformUI.getWorkbench().getDisplay().asyncExec( () -> {
-			var modifier = new JavaTabLabelModifier();
+			var modifier = new TabLabelModifier();
 
 			// Existing editors.
 			IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
@@ -22,9 +22,8 @@ public class Activator extends AbstractUIPlugin implements IStartup {
 					for (IWorkbenchPartReference partRef : page.getEditorReferences())
 						modifier.partOpened(partRef);
 				}
+				window.getPartService().addPartListener(modifier);
 			}
-
-			PlatformUI.getWorkbench().getActiveWorkbenchWindow().getPartService().addPartListener(modifier);
 		});
 	}
 }
