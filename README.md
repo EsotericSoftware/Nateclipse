@@ -4,9 +4,9 @@ This Eclipse plugin improves your Java coding experience.
 
 ## JDT HTTP API
 
-Eclipse JDT functionality is exposed over HTTP (port 9001) so coding agents can use it.
+Eclipse JDT functionality is exposed over HTTP so coding agents can use it.
 
-Eclipse already has the project setup, symbol database, and builds incrementally in the background. These tools let your clanker check compilation, explore the codebase, and organize imports efficiently, without wasting tokens on `grep` and manual edits.
+Eclipse already has your project setup, symbol database, and builds incrementally in the background. This plugin lets your clanker check compilation, efficiently explore the codebase, and organize imports without wasting tokens on `grep` and manual edits.
 
 Tools provided:
 
@@ -35,7 +35,7 @@ After:
 
 Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases) and put it in your `Eclipse/dropins` folder.
 
-A [pi](https://pi.dev) extension for JDT access  is included in `pi-extension/`. To install, copy or symlink it:
+A [pi](https://pi.dev) extension for the JDT API is included in `pi-extension/`. To install, copy or symlink it:
 
 ```
 cp pi-extension/nateclipse.ts ~/.pi/agent/extensions/
