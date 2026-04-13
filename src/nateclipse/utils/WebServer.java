@@ -1,6 +1,8 @@
 
 package nateclipse.utils;
 
+import static java.nio.charset.StandardCharsets.*;
+
 import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
@@ -8,10 +10,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.concurrent.Executor;
@@ -22,13 +24,16 @@ import java.util.concurrent.ThreadPoolExecutor.AbortPolicy;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.Platform;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
 public abstract class WebServer implements HttpHandler {
-	static public final boolean trace = true;
-	static private final Charset UTF_8 = StandardCharsets.UTF_8;
+	static private final boolean trace = false;
+	static private final ILog log = Platform.getLog(WebServer.class);
 
 	private final WebServerSettings settings;
 	private final Executor executor;
@@ -55,9 +60,9 @@ public abstract class WebServer implements HttpHandler {
 			server.setExecutor(executor);
 			server.createContext("/", this);
 			server.start();
-			INFO("Listening on port: TCP " + server.getAddress().getPort());
+			log.info("Listening on port: TCP " + server.getAddress().getPort());
 		} catch (Throwable ex) {
-			ERROR("Unable to start web server: TCP " + settings.port, ex);
+			log.error("Unable to start web server: TCP " + settings.port, ex);
 		}
 	}
 
@@ -78,9 +83,15 @@ public abstract class WebServer implements HttpHandler {
 			!ex.getMessage().startsWith("An established connection was aborted")
 				&& !ex.getMessage().startsWith("Connection reset by peer") //
 			)) {
-				ERROR("Error handling request: " + exchange, ex);
+				log.error("Error handling request: " + exchange, ex);
 			}
-			exchange.response503();
+			try {
+				var writer = new StringWriter();
+				ex.printStackTrace(new PrintWriter(writer));
+				exchange.response(500, writer.toString());
+			} catch (Throwable ignored) {
+				exchange.response503();
+			}
 		} finally {
 			if (exchange.autoClose) exchange.close();
 		}
@@ -90,7 +101,7 @@ public abstract class WebServer implements HttpHandler {
 		if (!file.exists()) return false;
 		String mimetype = mimetypes.get(extension(file));
 		if (mimetype == null) {
-			ERROR("Unknown mimetype: " + file + " [" + exchange.http.getRemoteAddress() + "]");
+			log.error("Unknown mimetype: " + file + " [" + exchange.http.getRemoteAddress() + "]");
 			return false;
 		}
 		if (mimetype.isEmpty()) return false;
@@ -211,19 +222,8 @@ public abstract class WebServer implements HttpHandler {
 		}
 	}
 
-	static void ERROR (String message, Throwable ex) {
-	}
-
-	static void ERROR (String message) {
-	}
-
-	static void WARN (String message) {
-	}
-
-	static void INFO (String message) {
-	}
-
 	static void TRACE (String message) {
+		if (trace) log.info("[trace] " + message);
 	}
 
 	static void copyStream (InputStream input, OutputStream output, byte[] buffer) throws IOException {

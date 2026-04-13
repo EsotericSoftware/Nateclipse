@@ -45,7 +45,6 @@ function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string):
 }
 
 export default function (pi: ExtensionAPI) {
-
 	pi.registerTool({
 		name: "jdt_errors",
 		label: "JDT Errors",
@@ -83,7 +82,10 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args, theme) {
 			let text = theme.fg("toolTitle", theme.bold("jdt_references "));
 			text += theme.fg("accent", args.type);
-			if (args.member) text += theme.fg("dim", "#") + theme.fg("accent", args.member);
+			if (args.member) {
+				text += theme.fg("dim", "#") + theme.fg("accent", args.member);
+				if (args.paramTypes) text += theme.fg("dim", "(" + args.paramTypes + ")");
+			}
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -120,7 +122,10 @@ export default function (pi: ExtensionAPI) {
 			let text = theme.fg("toolTitle", theme.bold("jdt_hierarchy "));
 			if (args.direction && args.direction !== "sub") text += theme.fg("dim", args.direction + " ");
 			text += theme.fg("accent", args.type);
-			if (args.method) text += theme.fg("dim", "#") + theme.fg("accent", args.method);
+			if (args.method) {
+				text += theme.fg("dim", "#") + theme.fg("accent", args.method);
+				if (args.paramTypes) text += theme.fg("dim", "(" + args.paramTypes + ")");
+			}
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -138,7 +143,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "jdt_search_type",
 		label: "JDT Search Type",
-		description: "Search for Java types by name via Eclipse JDT. Supports wildcards: *Bar, Bar*, *Utils*.",
+		description: "Search for Java types by name via Eclipse JDT. Supports wildcards: *Bar, B?r*, *Utils*.",
 		promptSnippet: "Search Java types by name (wildcards) via Eclipse JDT",
 		promptGuidelines: ["Prefer jdt_search_type over find/grep when locating Java types by name."],
 		parameters: Type.Object({
@@ -205,6 +210,37 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "jdt_organize_imports",
+		label: "JDT Organize Imports",
+		description: "Organize imports for a Java file. Adds missing imports, removes unused ones. Resolves ambiguous types using project priority rules. Call after finishing code edits.",
+		promptSnippet: "Organize Java imports (add missing, remove unused) via Eclipse JDT",
+		promptGuidelines: ["After editing Java files, use jdt_organize_imports to fix imports before checking compilation with jdt_errors."],
+		parameters: Type.Object({
+			file: Type.String({ description: "Path to the Java file." }),
+			resolve: Type.Optional(Type.String({ description: "Explicit resolutions for ambiguous types, e.g. Array:com.badlogic.gdx.utils.Array,List:java.util.List" })),
+		}),
+		renderCall(args, theme) {
+			let text = theme.fg("toolTitle", theme.bold("jdt_organize_imports "));
+			text += theme.fg("accent", args.file);
+			if (args.resolve) text += theme.fg("dim", " resolve: ") + theme.fg("accent", args.resolve);
+			return new Text(text, 0, 0);
+		},
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const path = require("node:path");
+			const absFile = path.resolve(ctx.cwd, params.file);
+			const data = await jdt("/jdt_organize_imports", { ...params, file: absFile }, signal);
+			if (data.organized) {
+				return { content: [{ type: "text" as const, text: "Imports organized." }] };
+			}
+			const lines = ["Ambiguous imports (call again with resolve parameter):"];
+			for (const c of data.conflicts) {
+				lines.push(`  ${c.type}: ${c.choices.join(", ")}`);
+			}
+			return { content: [{ type: "text" as const, text: lines.join("\n") }] };
 		},
 	});
 }

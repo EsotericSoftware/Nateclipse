@@ -3,6 +3,8 @@ package nateclipse;
 
 import java.lang.reflect.Field;
 
+import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.swt.custom.CTabFolder;
 import org.eclipse.swt.custom.CTabItem;
 import org.eclipse.swt.widgets.Composite;
@@ -14,6 +16,8 @@ import org.eclipse.ui.IWorkbenchPart;
 import org.eclipse.ui.IWorkbenchPartReference;
 
 public class TabLabelModifier implements IPartListener2 {
+	static private final ILog log = Platform.getLog(TabLabelModifier.class);
+
 	@Override
 	public void partOpened (IWorkbenchPartReference partRef) {
 		if (partRef.getPart(false) instanceof IEditorPart editor && editor.getEditorInput() instanceof IURIEditorInput) {
@@ -60,7 +64,7 @@ public class TabLabelModifier implements IPartListener2 {
 			Object model = partRef.getClass().getMethod("getModel").invoke(partRef, (Object[])null);
 			model.getClass().getMethod("setLabel", String.class).invoke(model, title);
 		} catch (Exception ex) {
-			new Exception("Unable to set tab title (Nateclipse plugin).", ex).printStackTrace();
+			log.error("Unable to set tab title.", ex);
 		}
 	}
 
@@ -93,7 +97,7 @@ public class TabLabelModifier implements IPartListener2 {
 					field.setAccessible(true);
 					field.set(tabFolder, false);
 				} catch (Exception ex) {
-					new Exception("Unable to set CTabFolder#showClose false (Nateclipse plugin).", ex).printStackTrace();
+					log.error("Unable to set CTabFolder#showClose false.", ex);
 				}
 
 				tabFolder.setMinimumCharacters(100);

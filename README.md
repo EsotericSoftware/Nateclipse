@@ -27,6 +27,7 @@ Tools provided:
 * `jdt_hierarchy` subtypes, supertypes, or full hierarchy (optionally filtered to method overrides)
 * `jdt_search_type` find types by name (supports `*` and `?`)
 * `jdt_members` list fields and methods with signatures, modifiers, line numbers (includes inherited)
+* `jdt_organize_imports` add missing imports, remove unused, resolve ambiguous types with priority rules
 
 ## Installation
 
