@@ -54,6 +54,8 @@ public class WebJDT extends WebServer {
 			jdt_members(exchange);
 		else if (path.equals("/jdt_organize_imports"))
 			jdt_organize_imports(exchange);
+		else if (path.equals("/jdt_classpath"))
+			jdt_classpath(exchange);
 		else
 			exchange.response404();
 		return true;
@@ -614,6 +616,47 @@ public class WebJDT extends WebServer {
 			}
 			json.pop();
 		}
+		json.pop();
+		exchange.responseJson(200, json.toString());
+	}
+
+	void jdt_classpath (Exchange exchange) throws Throwable {
+		var query = exchange.decodeQuery();
+		String projectName = query.get("project");
+
+		if (projectName == null || projectName.isEmpty()) {
+			exchange.responseJson(400, "{\"error\":\"Missing parameter: project\"}");
+			return;
+		}
+
+		var project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
+		if (!project.exists()) {
+			exchange.responseJson(404, "{\"error\":\"Project not found\"}");
+			return;
+		}
+
+		var javaProject = JavaCore.create(project);
+		var paths = org.eclipse.jdt.launching.JavaRuntime.computeDefaultRuntimeClassPath(javaProject);
+
+		// Dedupe and write to temp file.
+		var seen = new java.util.LinkedHashSet<String>();
+		for (var path : paths) seen.add(path);
+		var file = java.io.File.createTempFile("classpath-" + projectName + "-", ".txt");
+		file.deleteOnExit();
+		try (var writer = new java.io.FileWriter(file)) {
+			writer.write("-cp");
+			writer.write(System.lineSeparator());
+			var sb = new StringBuilder();
+			for (var path : seen) {
+				if (sb.length() > 0) sb.append(java.io.File.pathSeparatorChar);
+				sb.append(path);
+			}
+			writer.write(sb.toString());
+		}
+
+		var json = new Json();
+		json.object();
+		json.set("file", file.getAbsolutePath().replace('\\', '/'));
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}

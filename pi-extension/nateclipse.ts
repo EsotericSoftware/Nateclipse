@@ -48,8 +48,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "jdt_errors",
 		label: "JDT Errors",
-		description: "Check Java compilation errors and warnings. Refreshes workspace and waits for build to complete.",
-		promptSnippet: "Check Java compilation errors/warnings via Eclipse JDT",
+		description: "Reports Java compilation errors and warnings. Refreshes workspace and waits for build to complete.",
+		promptSnippet: "Reports Java compilation errors/warnings via Eclipse JDT",
 		promptGuidelines: ["After editing Java files, use jdt_errors to verify the project compiles."],
 		parameters: Type.Object({
 			project: Type.Optional(Type.String({ description: "Eclipse project name. Omit for all projects." })),
@@ -108,7 +108,7 @@ export default function (pi: ExtensionAPI) {
 		name: "jdt_hierarchy",
 		label: "JDT Type Hierarchy",
 		description: "Show type hierarchy via Eclipse JDT. Returns subtypes/implementors, supertypes, or full hierarchy. Optionally filter to types that override a specific method.",
-		promptSnippet: "Show Java type hierarchy (sub/super/all) via Eclipse JDT. Optional method override filter.",
+		promptSnippet: "Show Java type hierarchy via Eclipse JDT.",
 		parameters: Type.Object({
 			type: Type.String({ description: "Fully qualified type, e.g. com.foo.Bar" }),
 			direction: Type.Optional(StringEnum(["sub", "super", "all"] as const, {
@@ -144,7 +144,7 @@ export default function (pi: ExtensionAPI) {
 		name: "jdt_search_type",
 		label: "JDT Search Type",
 		description: "Search for Java types by name via Eclipse JDT. Supports wildcards: *Bar, B?r*, *Utils*.",
-		promptSnippet: "Search Java types by name (wildcards) via Eclipse JDT",
+		promptSnippet: "Search Java types by name with wildcards via Eclipse JDT",
 		promptGuidelines: ["Prefer jdt_search_type over find/grep when locating Java types by name."],
 		parameters: Type.Object({
 			name: Type.String({ description: "Type name or pattern with * and ? wildcards." }),
@@ -218,7 +218,7 @@ export default function (pi: ExtensionAPI) {
 		label: "JDT Organize Imports",
 		description: "Organize imports for a Java file. Adds missing imports, removes unused ones. Resolves ambiguous types using project priority rules. Call after finishing code edits.",
 		promptSnippet: "Organize Java imports (add missing, remove unused) via Eclipse JDT",
-		promptGuidelines: ["After editing Java files, use jdt_organize_imports to fix imports before checking compilation with jdt_errors."],
+		promptGuidelines: ["Use to verify the project compiles after editing Java files"],
 		parameters: Type.Object({
 			file: Type.String({ description: "Path to the Java file." }),
 			resolve: Type.Optional(Type.String({ description: "Explicit resolutions for ambiguous types, e.g. Array:com.badlogic.gdx.utils.Array,List:java.util.List" })),
@@ -241,6 +241,25 @@ export default function (pi: ExtensionAPI) {
 				lines.push(`  ${c.type}: ${c.choices.join(", ")}`);
 			}
 			return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "jdt_classpath",
+		label: "JDT Classpath",
+		description: "Get the resolved classpath for a Java project. Use with bash to run Java classes with the correct classpath.",
+		promptSnippet: "Get resolved classpath for a Java project via Eclipse JDT",
+		parameters: Type.Object({
+			project: Type.String({ description: "Eclipse project name." }),
+		}),
+		renderCall(args, theme) {
+			let text = theme.fg("toolTitle", theme.bold("jdt_classpath "));
+			text += theme.fg("accent", args.project);
+			return new Text(text, 0, 0);
+		},
+		async execute(_id, params, signal) {
+			const data = await jdt("/jdt_classpath", params, signal);
+			return { content: [{ type: "text" as const, text: data.file }] };
 		},
 	});
 }

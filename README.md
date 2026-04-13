@@ -6,7 +6,7 @@ This Eclipse plugin improves your Java coding experience.
 
 Eclipse JDT functionality is exposed over HTTP so coding agents can use it.
 
-Eclipse already has your project setup, symbol database, and builds incrementally in the background. This plugin lets your clanker check compilation, efficiently explore the codebase, and organize imports without wasting tokens on `grep` and manual edits.
+Eclipse already has your project setup, symbol database, and builds incrementally in the background. This plugin lets your clanker check compilation, efficiently explore the codebase, and organize imports without wasting tokens on `grep` and manual edits. It can also get the full classpath of an Eclipse project so it can run a main method using bash.
 
 Tools provided:
 
@@ -15,7 +15,8 @@ Tools provided:
 * `jdt_hierarchy` subtypes, supertypes, or full hierarchy (optionally filtered to method overrides)
 * `jdt_search_type` find types by name (supports `*` and `?`)
 * `jdt_members` list fields and methods with signatures, modifiers, line numbers (includes inherited)
-* `jdt_organize_imports` add missing imports, remove unused, resolve ambiguous types
+* `jdt_organize_imports` add missing imports, remove unused, resolve ambiguous types (auto-resolves single conflicts via build verification)
+* `jdt_classpath` get resolved classpath for running Java classes via bash
 
 ## Tabs
 
