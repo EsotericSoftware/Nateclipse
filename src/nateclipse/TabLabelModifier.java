@@ -27,6 +27,25 @@ public class TabLabelModifier implements IPartListener2 {
 		}
 	}
 
+	/** Walks all CTabFolders and forces close buttons off and minimum characters up. No title matching needed. */
+	static void fixAllTabFolders (Composite parent) {
+		for (Control child : parent.getChildren()) {
+			if (child instanceof CTabFolder folder) {
+				try {
+					Field field = CTabFolder.class.getDeclaredField("showClose");
+					field.setAccessible(true);
+					field.set(folder, false);
+				} catch (Exception ignored) {
+				}
+				for (CTabItem item : folder.getItems())
+					item.setShowClose(false);
+				folder.setMinimumCharacters(100);
+			} else if (child instanceof Composite) {
+				fixAllTabFolders((Composite)child);
+			}
+		}
+	}
+
 	static void fixTitle (IWorkbenchPartReference partRef, IEditorPart editor) {
 		String title = editor.getEditorInput().getName();
 		String uniqueTitle = title + "___nateclipse___";

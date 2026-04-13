@@ -10,8 +10,6 @@ Better tabs:
 * Removes the close button so tabs are shorter.
 * Increases the number of characters for a tab to be truncated with a ellipsis to 100 so tabs are longer, but you can actually tell them apart.
 
-It's not applied to all tabs when Eclipse loads, tabs need to be focused once. It's janky, but it works.
-
 ## JDT HTTP API
 
 Eclipse JDT functionality is exposed over HTTP (port 9001) so coding agents can use it.

@@ -21,8 +21,12 @@ public class Activator extends AbstractUIPlugin implements IStartup {
 		PlatformUI.getWorkbench().getDisplay().asyncExec( () -> {
 			var modifier = new TabLabelModifier();
 
-			// Existing editors.
+			// Fix all CTabFolders globally (close buttons, min characters) before per-tab title fixing.
 			IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
+			if (window != null && window.getShell() != null)
+				TabLabelModifier.fixAllTabFolders(window.getShell());
+
+			// Existing editors.
 			if (window != null) {
 				IWorkbenchPage page = window.getActivePage();
 				if (page != null) {
