@@ -4,8 +4,6 @@ package nateclipse.utils;
 import static java.nio.charset.StandardCharsets.*;
 
 import java.io.Closeable;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -35,49 +33,33 @@ public abstract class WebServer implements HttpHandler {
 	static private final boolean trace = false;
 	static private final ILog log = Platform.getLog(WebServer.class);
 
-	private final WebServerSettings settings;
+	private final int port;
 	private final Executor executor;
-	private final HashMap<String, String> mimetypes = new HashMap();
 	protected HttpServer server;
 
-	public WebServer (WebServerSettings settings, Executor executor) {
-		this.settings = settings;
+	public WebServer (int port, Executor executor) {
+		this.port = port;
 		this.executor = executor;
-
-		mimetypes.put("txt", "text/plain");
-		mimetypes.put("html", "text/html");
-		mimetypes.put("css", "text/css");
-		mimetypes.put("json", "application/json");
-		mimetypes.put("png", "image/png");
-		mimetypes.put("jpg", "image/jpeg");
-		mimetypes.put("gif", "image/gif");
-		mimetypes.put("js", "text/javascript");
 	}
 
 	public void start () {
 		try {
-			server = HttpServer.create(new InetSocketAddress(settings.port), 0);
+			server = HttpServer.create(new InetSocketAddress(port), 0);
 			server.setExecutor(executor);
 			server.createContext("/", this);
 			server.start();
 			log.info("Listening on port: TCP " + server.getAddress().getPort());
 		} catch (Throwable ex) {
-			log.error("Unable to start web server: TCP " + settings.port, ex);
+			log.error("Unable to start web server: TCP " + port, ex);
 		}
 	}
 
-	abstract public boolean handle (String path, Exchange exchange) throws Throwable;
-
-	public File root (String path) throws IOException {
-		return new File(settings.root, path.replace("..", "xxx"));
-	}
+	abstract public void handle (String path, Exchange exchange) throws Throwable;
 
 	public void handle (HttpExchange httpExchange) throws IOException {
 		var exchange = new Exchange(httpExchange);
 		try {
-			if (handle(exchange.path, exchange)) return;
-			if (settings.root != null && serveFile(exchange, root(exchange.path))) return;
-			exchange.response404();
+			handle(exchange.path, exchange);
 		} catch (Throwable ex) {
 			if (trace || ex.getMessage() == null || ( //
 			!ex.getMessage().startsWith("An established connection was aborted")
@@ -94,21 +76,6 @@ public abstract class WebServer implements HttpHandler {
 			}
 		} finally {
 			if (exchange.autoClose) exchange.close();
-		}
-	}
-
-	public boolean serveFile (Exchange exchange, File file) throws IOException {
-		if (!file.exists()) return false;
-		String mimetype = mimetypes.get(extension(file));
-		if (mimetype == null) {
-			log.error("Unknown mimetype: " + file + " [" + exchange.http.getRemoteAddress() + "]");
-			return false;
-		}
-		if (mimetype.isEmpty()) return false;
-		try (InputStream input = new FileInputStream(file)) {
-			exchange.responseContentType(mimetype);
-			exchange.response(200, input, (int)file.length());
-			return true;
 		}
 	}
 
@@ -212,8 +179,12 @@ public abstract class WebServer implements HttpHandler {
 			return http.getResponseBody();
 		}
 
+		public boolean hasResponse () {
+			return http.getResponseCode() != -1;
+		}
+
 		public void close () throws IOException {
-			if (http.getResponseCode() == -1) http.sendResponseHeaders(204, -1); // No response.
+			if (!hasResponse()) http.sendResponseHeaders(204, -1); // No response.
 			http.close();
 		}
 
@@ -239,13 +210,6 @@ public abstract class WebServer implements HttpHandler {
 		return String.format(Locale.ROOT, "%d (%.1f %siB)"/**/, bytes, bytes / Math.pow(1024, exp), "kMGTPE".charAt(exp - 1));
 	}
 
-	static String extension (File file) {
-		String name = file.getName();
-		int dotIndex = name.lastIndexOf('.');
-		if (dotIndex == -1) return "";
-		return name.substring(dotIndex + 1);
-	}
-
 	static public ThreadPoolExecutor newThreadPool (int maxThreads, int liveSeconds, String name, boolean daemon) {
 		var pool = new ThreadPoolExecutor(maxThreads, maxThreads, liveSeconds, TimeUnit.SECONDS, //
 			new LinkedBlockingQueue(), //
@@ -262,19 +226,10 @@ public abstract class WebServer implements HttpHandler {
 		return pool;
 	}
 
-	static public class WebServerSettings {
-		public int port;
-		public String root;
-	}
-
 	static public void main (String[] args) throws Throwable {
-		var settings = new WebServerSettings();
-		settings.port = 9001;
-		settings.root = ".";
-		new WebServer(settings, newThreadPool(3, 10, "test", false)) {
-			public boolean handle (String path, Exchange exchange) throws Throwable {
+		new WebServer(9001, newThreadPool(3, 10, "test", false)) {
+			public void handle (String path, Exchange exchange) throws Throwable {
 				System.out.println(path);
-				return false;
 			}
 		}.start();
 	}

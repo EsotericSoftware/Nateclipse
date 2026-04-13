@@ -1,9 +1,15 @@
 
 package nateclipse;
 
+import static java.nio.charset.StandardCharsets.*;
+
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.concurrent.Executor;
 
 import org.eclipse.core.resources.IMarker;
@@ -30,6 +36,7 @@ import org.eclipse.jdt.core.search.SearchParticipant;
 import org.eclipse.jdt.core.search.SearchPattern;
 import org.eclipse.jdt.core.search.SearchRequestor;
 import org.eclipse.jdt.core.search.TypeNameMatch;
+import org.eclipse.jdt.launching.JavaRuntime;
 
 import nateclipse.utils.Json;
 import nateclipse.utils.WebServer;
@@ -37,28 +44,21 @@ import nateclipse.utils.WebServer;
 public class WebJDT extends WebServer {
 	private final Object organizeImportsLock = new Object();
 
-	public WebJDT (WebServerSettings settings, Executor executor) {
-		super(settings, executor);
+	public WebJDT (int port, Executor executor) {
+		super(port, executor);
 	}
 
-	public boolean handle (String path, Exchange exchange) throws Throwable {
-		if (path.equals("/jdt_errors"))
-			jdt_errors(exchange);
-		else if (path.equals("/jdt_references"))
-			jdt_references(exchange);
-		else if (path.equals("/jdt_hierarchy"))
-			jdt_hierarchy(exchange);
-		else if (path.equals("/jdt_search_type"))
-			jdt_search_type(exchange);
-		else if (path.equals("/jdt_members"))
-			jdt_members(exchange);
-		else if (path.equals("/jdt_organize_imports"))
-			jdt_organize_imports(exchange);
-		else if (path.equals("/jdt_classpath"))
-			jdt_classpath(exchange);
-		else
-			exchange.response404();
-		return true;
+	public void handle (String path, Exchange exchange) throws Throwable {
+		switch (path) {
+		case "/jdt_errors" -> jdt_errors(exchange);
+		case "/jdt_references" -> jdt_references(exchange);
+		case "/jdt_hierarchy" -> jdt_hierarchy(exchange);
+		case "/jdt_search_type" -> jdt_search_type(exchange);
+		case "/jdt_members" -> jdt_members(exchange);
+		case "/jdt_organize_imports" -> jdt_organize_imports(exchange);
+		case "/jdt_classpath" -> jdt_classpath(exchange);
+		default -> exchange.response404();
+		}
 	}
 
 	void jdt_errors (Exchange exchange) throws Throwable {
@@ -449,8 +449,8 @@ public class WebJDT extends WebServer {
 
 		for (var candidate : candidates) {
 			// Restore original before each attempt (disk + CU buffer).
-			ifile.setContents(new java.io.ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
-			cu.getBuffer().setContents(new String(originalContent, java.nio.charset.StandardCharsets.UTF_8));
+			ifile.setContents(new ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
+			cu.getBuffer().setContents(new String(originalContent, UTF_8));
 
 			// Run organize imports with a non-cancelling chooser: resolve explicits, pick the brute-force candidate, pick first
 			// option for anything unexpected.
@@ -498,8 +498,8 @@ public class WebJDT extends WebServer {
 
 		if (working.size() == 1) {
 			// Re-apply the one working candidate.
-			ifile.setContents(new java.io.ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
-			cu.getBuffer().setContents(new String(originalContent, java.nio.charset.StandardCharsets.UTF_8));
+			ifile.setContents(new ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
+			cu.getBuffer().setContents(new String(originalContent, UTF_8));
 			explicitResolve.put(simpleName, working.get(0));
 			var workingCopy2 = cu.getWorkingCopy(new NullProgressMonitor());
 			try {
@@ -528,8 +528,8 @@ public class WebJDT extends WebServer {
 			respondOrganizeImports(exchange, true, null);
 		} else {
 			// 0 or 2+ candidates worked. Restore original, return conflict.
-			ifile.setContents(new java.io.ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
-			cu.getBuffer().setContents(new String(originalContent, java.nio.charset.StandardCharsets.UTF_8));
+			ifile.setContents(new ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
+			cu.getBuffer().setContents(new String(originalContent, UTF_8));
 			respondOrganizeImports(exchange, false, conflicts);
 		}
 	}
@@ -636,19 +636,20 @@ public class WebJDT extends WebServer {
 		}
 
 		var javaProject = JavaCore.create(project);
-		var paths = org.eclipse.jdt.launching.JavaRuntime.computeDefaultRuntimeClassPath(javaProject);
+		var paths = JavaRuntime.computeDefaultRuntimeClassPath(javaProject);
 
 		// Dedupe and write to temp file.
-		var seen = new java.util.LinkedHashSet<String>();
-		for (var path : paths) seen.add(path);
-		var file = java.io.File.createTempFile("classpath-" + projectName + "-", ".txt");
+		var seen = new LinkedHashSet<String>();
+		for (var path : paths)
+			seen.add(path);
+		var file = File.createTempFile("classpath-" + projectName + "-", ".txt");
 		file.deleteOnExit();
-		try (var writer = new java.io.FileWriter(file)) {
+		try (var writer = new FileWriter(file)) {
 			writer.write("-cp");
 			writer.write(System.lineSeparator());
 			var sb = new StringBuilder();
 			for (var path : seen) {
-				if (sb.length() > 0) sb.append(java.io.File.pathSeparatorChar);
+				if (sb.length() > 0) sb.append(File.pathSeparatorChar);
 				sb.append(path);
 			}
 			writer.write(sb.toString());
