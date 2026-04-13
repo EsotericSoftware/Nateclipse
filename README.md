@@ -16,7 +16,7 @@ It's not applied to all tabs when Eclipse loads, tabs need to be focused once. I
 
 Eclipse JDT functionality is exposed over HTTP (port 9001) so coding agents can use it.
 
-A [pi](https://github.com/badlogic/pi-mono) extension is included in `pi-extension/`. To install, copy or symlink it:
+A [pi](https://pi.dev) extension is included in `pi-extension/`. To install, copy or symlink it:
 
 ```
 cp pi-extension/nateclipse.ts ~/.pi/agent/extensions/
