@@ -2,23 +2,11 @@
 
 This Eclipse plugin improves your Java coding experience.
 
-## Tabs
-
-Better tabs:
-
-* Removes the `.java` suffix so tabs are shorter.
-* Removes the close button so tabs are shorter.
-* Increases the number of characters for a tab to be truncated with a ellipsis to 100 so tabs are longer, but you can actually tell them apart.
-
 ## JDT HTTP API
 
 Eclipse JDT functionality is exposed over HTTP (port 9001) so coding agents can use it.
 
-A [pi](https://pi.dev) extension is included in `pi-extension/`. To install, copy or symlink it:
-
-```
-cp pi-extension/nateclipse.ts ~/.pi/agent/extensions/
-```
+Eclipse already has the project setup, symbol database, and builds incrementally in the background. These tools let your clanker check compilation, explore the codebase, and organize imports efficiently, without wasting tokens on `grep` and manual edits.
 
 Tools provided:
 
@@ -29,14 +17,26 @@ Tools provided:
 * `jdt_members` list fields and methods with signatures, modifiers, line numbers (includes inherited)
 * `jdt_organize_imports` add missing imports, remove unused, resolve ambiguous types
 
-## Installation
+## Tabs
 
-Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases) and put it in your `Eclipse/dropins` folder.
+Better tabs:
 
-## Screenshots
+* Removes the `.java` suffix so tabs are shorter.
+* Removes the close button so tabs are shorter.
+* Increases the number of characters for a tab to be truncated with a ellipsis to 100 so tabs are longer, but you can actually tell them apart.
 
 Before:
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/before.png?raw=true)
 
 After:
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/after.png?raw=true)
+
+## Installation
+
+Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases) and put it in your `Eclipse/dropins` folder.
+
+A [pi](https://pi.dev) extension for JDT access  is included in `pi-extension/`. To install, copy or symlink it:
+
+```
+cp pi-extension/nateclipse.ts ~/.pi/agent/extensions/
+```
