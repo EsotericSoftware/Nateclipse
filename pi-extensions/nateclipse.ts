@@ -27,11 +27,12 @@ export default function (pi: ExtensionAPI) {
 			offset: Type.Optional(Type.Number({ description: "Line number to start reading from, 1-indexed" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum lines to read" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("read") + accent(args.type || args.path) + extra("offset", args.offset, "limit", args.limit);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("read") + accent(params.type || params.path) + extra("offset", params.offset, "limit", params.limit);
 			return new Text(text, 0, 0);
 		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			if (!params.type && !params.path) throw new Error("Missing parameter: file or type");
 			let resolvedPath: string | null = null;
 			if (params.type) {
 				resolvedPath = await resolveTypeToFile(params.type, undefined, signal);
@@ -60,8 +61,8 @@ export default function (pi: ExtensionAPI) {
 			flags: Type.Optional(Type.String({ description: "Grep flags eg: -i -n -A3 -B2 -C5. Default: -n" })),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_grep") + accent(args.type) + extra("project", project) + extra(args.pattern) + " " + (args.flags || "-n");
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_grep") + accent(params.type) + extra("project", params.project) + extra(params.pattern) + " " + (params.flags || "-n");
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -74,13 +75,18 @@ export default function (pi: ExtensionAPI) {
 			args.push(params.pattern, ...files);
 			const result = await pi.exec("grep", args, { signal });
 			const output = (result.stdout || "").trim();
-			if (!output) return { content: [{ type: "text" as const, text: "No matches" }], details: {} };
+			if (!output) return { content: [{ type: "text" as const,
+				text: "No matches for: " + params.pattern + "\n" + files.join("\n") }], details: { files } };
 			const cleaned = output.split("\n").map((l: string) => l.replace(/^(\d+):/, "$1  ")).join("\n");
-			return { content: [{ type: "text" as const, text: cleaned }], details: { lines: output.split("\n") } };
+			return { content: [{ type: "text" as const, text: cleaned }], details: { lines: output.split("\n"), files } };
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Searching..."), 0, 0);
-			if (!r.details?.lines) return new Text(r.content[0]?.text || "No matches", 0, 0);
+			if (!r.details?.lines) {
+				let text = r.content[0]?.text || "No matches found.";
+				if (r.details?.files) text += "\n" + r.details.files.map((f: string) => filePath(f)).join("\n");
+				return new Text(text, 0, 0);
+			}
 			const lines = r.details.lines as string[];
 			let w = 0;
 			for (const l of lines) { const m = l.match(/^(\d+):/); if (m) w = Math.max(w, m[1].length); }
@@ -101,13 +107,14 @@ export default function (pi: ExtensionAPI) {
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_members") + accent(args.type) + extra("project", args.project);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_members") + accent(params.type) + extra("project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_members", params, signal);
-			if (!data.length) return { content: [{ type: "text" as const, text: "No members" }], details: {} };
+			if (!data) return { content: [{ type: "text" as const, text: "Type not found: " + params.type }], details: { data } };
+			if (!data.length) return { content: [{ type: "text" as const, text: "Type has no members: " + params.type }], details: { data } };
 			const parts: string[] = [];
 			for (let i = 0; i < data.length; i++) {
 				const entry = data[i];
@@ -141,7 +148,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Loading..."), 0, 0);
-			if (!r.details?.data) return new Text(r.content[0]?.text || "No members", 0, 0);
+			if (!r.details?.data) return new Text(r.content[0]?.text || "Type not found.", 0, 0);
+			if (!r.details.data.length) return new Text(r.content[0]?.text || "Type has no members.", 0, 0);
 			const { data, cwd } = r.details;
 			const allMembers = data.flatMap((e: any) => [...(e.fields || []), ...(e.methods || [])]);
 			const w = maxLineWidth(allMembers);
@@ -183,12 +191,14 @@ export default function (pi: ExtensionAPI) {
 			paramTypes: Type.Optional(Type.String({ description: "Comma-separated param types for overloaded methods" })),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_method") + type(args.type, args.method, args.paramTypes) + extra("project", args.project);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_method") + type(params.type, params.method, params.paramTypes) + extra("project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
+			if (!data) return { content: [{ type: "text" as const,
+				text: "Type not found: " + typePlain(params.type, params.method, params.paramTypes) }], details: {} };
 			const parts: string[] = [];
 			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
 			parts.push(data.source);
@@ -196,7 +206,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Loading..."), 0, 0);
-			if (!r.details?.data) return new Text(r.content[0]?.text || "", 0, 0);
+			if (!r.details?.data) return new Text(r.content[0]?.text || "Type not found.", 0, 0);
 			const { data, cwd } = r.details;
 			const header = data.file ? filePath(relPath(data.file, cwd)) + (data.line ? lineNumber(":" + data.line + (data.endLine ? "-" + data.endLine : "")) : "") : "";
 			const source = (data.source || "").split("\n").map((l: string) => javaCode(l)).join("\n");
@@ -215,13 +225,13 @@ export default function (pi: ExtensionAPI) {
 			name: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_find_type") + accent(args.name) + extra("project", args.project);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_find_type") + accent(params.name) + extra("project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_find_type", params, signal);
-			if (data.length === 0) return { content: [{ type: "text" as const, text: "No types found" }], details: {} };
+			if (data.length === 0) return { content: [{ type: "text" as const, text: "No matching types for: " + params.name }], details: {} };
 			const text = groupByFile(data, ctx.cwd, (t) => {
 				let s = t.line ? `${t.line}` : " ";
 				s += `  ${t.type}`;
@@ -231,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Searching..."), 0, 0);
-			if (!r.details?.data) return new Text(r.content[0]?.text || "No types found", 0, 0);
+			if (!r.details?.data) return new Text(r.content[0]?.text || "No types found.", 0, 0);
 			const { data, cwd } = r.details;
 			const w = maxLineWidth(data);
 			return renderGrouped(data, cwd, (t) => (t.line ? paddedLine(t.line, w) + "  " : "") + accent(t.type));
@@ -250,31 +260,39 @@ export default function (pi: ExtensionAPI) {
 			type: Type.Optional(Type.String({ description: "Type name or pattern with * and ? wildcards. Resolves to file, overriding file parameter" })),
 			resolve: Type.Optional(Type.String({ description: "Explicit resolutions for ambiguous types eg: Array:com.badlogic.gdx.utils.Array,List:java.util.List" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_organize_imports") + accent(args.type || args.file);
-			if (args.resolve) text += extra("resolve", args.resolve);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_organize_imports") + accent(params.type || params.file);
+			if (params.resolve) text += extra("resolve", params.resolve);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if (!params.type && !params.file) throw new Error("Missing parameter: file or type");
 			const path = require("node:path");
 			const serverParams: any = { ...params };
-			if (!params.type && params.file) serverParams.file = path.resolve(ctx.cwd, params.file);
+			if (!params.type) serverParams.file = path.resolve(ctx.cwd, params.file);
 			const data = await jdt("/java_organize_imports", serverParams, signal);
+			if (!data) {
+				const item = params.type ? "Type" : "File";
+				return { content: [{ type: "text" as const, text: item + " not found: " + (params.type || params.file) }],
+					details: { notFound: params.type || params.file, item } };
+			}
 			if (data.organized) return { content: [{ type: "text" as const, text: "Success" }], details: {} };
 			const lines = ["Ambiguous imports, call again with resolve parameter:"];
 			for (const c of data.conflicts)
 				lines.push(` ${c.type}: ${c.choices.join(", ")}`);
-			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { conflicts: data.conflicts } };
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { data, conflicts: data.conflicts } };
 		},
-		renderResult(r, { isPartial }, theme) {
-			_theme = theme;
+		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Organizing..."), 0, 0);
 			const text = r.content[0]?.text || "";
-			if (text === "Success") return new Text(green(text), 0, 0);
-			if (!r.details?.conflicts) return new Text(text, 0, 0);
+			if (text === "Success") return new Text(green("Success."), 0, 0);
+			if (!r.details?.data) {
+				const item = r.details?.item || "Type";
+				return new Text(text || item + " not found: " + (r.details?.notFound || ""), 0, 0);
+			}
+			if (!r.details?.data.conflicts) return new Text(text, 0, 0);
 			const parts = [red("Ambiguous imports, call again with resolve parameter:")];
-			for (const c of r.details.conflicts)
+			for (const c of r.details.data.conflicts)
 				parts.push(`${accent(c.type)}: ${c.choices.join(", ")}`);
 			return new Text(parts.join("\n"), 0, 0);
 		},
@@ -290,8 +308,8 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_errors") + extra("limit", args.limit);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_errors") + extra("limit", params.limit);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -308,7 +326,7 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Building..."), 0, 0);
 			const text = r.content[0]?.text || "";
-			if (text === "None") return new Text(green("None"), 0, 0);
+			if (text === "None") return new Text(green("No errors."), 0, 0);
 			if (!r.details?.data) return new Text(text, 0, 0);
 			const { data, cwd } = r.details;
 			return renderGrouped(data.errors, cwd, (e) => {
@@ -334,14 +352,17 @@ export default function (pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_references") + type(args.type, args.member, args.paramTypes)
-				+ extra("access", args.access, "limit", args.limit, "file", args.file, "project", args.project);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_references") + type(params.type, params.member, params.paramTypes)
+				+ extra("access", params.access, "limit", params.limit, "file", params.file, "project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_references", params, signal);
-			if (data.total === 0) return { content: [{ type: "text" as const, text: "No references found" }], details: {} };
+			if (!data) return { content: [{ type: "text" as const,
+				text: "Type not found: " + typePlain(params.type, params.member, params.paramTypes) }], details: { data } };
+			if (data.total === 0) return { content: [{ type: "text" as const,
+				text: "No references for: " + typePlain(params.type, params.member, params.paramTypes) }], details: { data } };
 			const text = groupByFile(data.references, ctx.cwd, (r) => {
 				let s = `${r.line}`;
 				if (r.enclosingType) {
@@ -356,7 +377,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Searching..."), 0, 0);
-			if (!r.details?.data) return new Text(r.content[0]?.text || "No references found", 0, 0);
+			if (!r.details?.data) return new Text(r.content[0]?.text || "Type not found.", 0, 0);
+			if (r.details.data.total === 0) return new Text(r.content[0]?.text || "No references found.", 0, 0);
 			const { data, cwd } = r.details;
 			const w = maxLineWidth(data.references);
 			return renderGrouped(data.references, cwd, (r) => {
@@ -383,15 +405,18 @@ export default function (pi: ExtensionAPI) {
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method eg: String,int" })),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_hierarchy") + type(args.type, args.method, args.paramTypes);
-			if (args.direction && args.direction !== "sub") text += extra("direction", args.direction);
-			text += extra("project", args.project);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_hierarchy") + type(params.type, params.method, params.paramTypes);
+			if (params.direction && params.direction !== "sub") text += extra("direction", params.direction);
+			text += extra("project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_hierarchy", params, signal);
-			if (data.length === 0) return { content: [{ type: "text" as const, text: "No types in hierarchy" }], details: {} };
+			if (!data) return { content: [{ type: "text" as const,
+				text: "Type not found: " + typePlain(params.type, params.method, params.paramTypes) }], details: { data } };
+			if (data.length === 0) return { content: [{ type: "text" as const,
+				text: "No types in hierarchy for: " + typePlain(params.type, params.method, params.paramTypes) }], details: { data } };
 			const lines = data.map((t: any) => {
 				let s = t.type;
 				if (t.file) s += "  " + relPath(t.file, ctx.cwd) + (t.line ? `:${t.line}` : "");
@@ -401,7 +426,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Working..."), 0, 0);
-			if (!r.details?.data) return new Text(r.content[0]?.text || "No types in hierarchy", 0, 0);
+			if (!r.details?.data) return new Text(r.content[0]?.text || "Type not found.", 0, 0);
+			if (r.details.data.length === 0) return new Text(r.content[0]?.text || "No types in hierarchy.", 0, 0);
 			const { data, cwd } = r.details;
 			return new Text(data.map((t: any) => {
 				let s = accent(t.type);
@@ -424,13 +450,16 @@ export default function (pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_callers") + type(args.type, args.method, args.paramTypes) + extra("limit", args.limit, "project", args.project);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_callers") + type(params.type, params.method, params.paramTypes) + extra("limit", params.limit, "project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_callers", params, signal);
-			if (data.total === 0) return { content: [{ type: "text" as const, text: "No callers found" }], details: {} };
+			if (!data) return { content: [{ type: "text" as const,
+				text: "Type not found: " + typePlain(params.type, params.method, params.paramTypes) }], details: { data } };
+			if (data.total === 0) return { content: [{ type: "text" as const,
+				text: "No callers for: " + typePlain(params.type, params.method, params.paramTypes) }], details: { data } };
 			const text = groupByFile(data.callers, ctx.cwd, (r) => {
 				let s = `${r.line}`;
 				if (r.enclosingType) {
@@ -445,7 +474,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Searching..."), 0, 0);
-			if (!r.details?.data) return new Text(r.content[0]?.text || "No callers found", 0, 0);
+			if (!r.details?.data) return new Text(r.content[0]?.text || "Type not found.", 0, 0);
+			if (r.details.data.total === 0) return new Text(r.content[0]?.text || "No callers found.", 0, 0);
 			const { data, cwd } = r.details;
 			const w = maxLineWidth(data.callers);
 			return renderGrouped(data.callers, cwd, (r) => {
@@ -466,15 +496,19 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			project: Type.String({ description: "Eclipse project name" }),
 		}),
-		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_classpath") + accent(args.project);
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_classpath") + accent(params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal) {
 			const data = await jdt("/java_classpath", params, signal);
-			return { content: [{ type: "text" as const, text: data.file }] };
+			if (!data) return { content: [{ type: "text" as const, text: "Project not found: " + params.project }], details: {} };
+			return { content: [{ type: "text" as const, text: data.file }], details: { data } };
 		},
-		renderResult(r, { isPartial }, theme) { return renderResult(r, isPartial, theme); },
+		renderResult(r, { isPartial }, theme) {
+			if (!r.details?.data) return new Text(r.content[0]?.text || "Project not found.", 0, 0);
+			return renderResult(r, isPartial, theme);
+		},
 	});
 }
 
@@ -592,7 +626,15 @@ function type(type: string, member?: string, paramTypes?: string): string {
 	let text = accent(type);
 	if (member) {
 		text += white("#") + member;
-		if (paramTypes) text += javaCode(member + "(" + paramTypes + ")");
+		if (paramTypes) text += javaCode("(" + paramTypes + ")");
+	}
+	return text;
+}
+function typePlain(type: string, member?: string, paramTypes?: string): string {
+	let text = type;
+	if (member) {
+		text += "#" + member;
+		if (paramTypes) text += "(" + paramTypes + ")";
 	}
 	return text;
 }
