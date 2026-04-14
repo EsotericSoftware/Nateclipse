@@ -196,7 +196,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params.type, params.method, params.paramTypes));
+			if (!data) return result("Type not found: " + typePlain(params));
 			const parts: string[] = [];
 			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
 			parts.push(data.source);
@@ -357,8 +357,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_references", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params.type, params.member, params.paramTypes), { data });
-			if (data.total === 0) return result("No references for: " + typePlain(params.type, params.member, params.paramTypes), { data });
+			if (!data) return result("Type not found: " + typePlain(params), { data });
+			if (data.total === 0) return result("No references for: " + typePlain(params), { data });
 			const text = groupByFile(data.references, ctx.cwd, (r) => {
 				let s = `${r.line}`;
 				if (r.enclosingType) {
@@ -409,8 +409,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_hierarchy", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params.type, params.method, params.paramTypes), { data });
-			if (data.length === 0) return result("No types in hierarchy for: " + typePlain(params.type, params.method, params.paramTypes), { data });
+			if (!data) return result("Type not found: " + typePlain(params), { data });
+			if (data.length === 0) return result("No types in hierarchy for: " + typePlain(params), { data });
 			const lines = data.map((t: any) => {
 				let s = t.type;
 				if (t.file) s += "  " + relPath(t.file, ctx.cwd) + (t.line ? `:${t.line}` : "");
@@ -450,8 +450,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_callers", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params.type, params.method, params.paramTypes), { data });
-			if (data.total === 0) return result("No callers for: " + typePlain(params.type, params.method, params.paramTypes), { data });
+			if (!data) return result("Type not found: " + typePlain(params), { data });
+			if (data.total === 0) return result("No callers for: " + typePlain(params), { data });
 			const text = groupByFile(data.callers, ctx.cwd, (r) => {
 				let s = `${r.line}`;
 				if (r.enclosingType) {
@@ -626,11 +626,12 @@ function type(type: string, member?: string, paramTypes?: string): string {
 	}
 	return text;
 }
-function typePlain(type: string, member?: string, paramTypes?: string): string {
-	let text = type;
+function typePlain(params: any): string {
+	let text = params.type;
+	const member = params.member || params.method;
 	if (member) {
 		text += "#" + member;
-		if (paramTypes) text += "(" + paramTypes + ")";
+		if (params.paramTypes) text += "(" + params.paramTypes + ")";
 	}
 	return text;
 }
