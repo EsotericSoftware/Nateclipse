@@ -22,6 +22,7 @@ import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.jdt.core.Flags;
 import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IJavaElement;
+import org.eclipse.jdt.core.IMember;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.JavaCore;
@@ -152,6 +153,7 @@ public class WebJDT extends WebServer {
 		String memberName = query.get("member");
 		String paramTypes = query.get("paramTypes");
 		String fileFilter = query.get("file");
+		String access = query.get("access");
 		int limit = intParam(query, "limit", DEFAULT_LIMIT);
 		boolean unlimited = "true".equals(query.get("unlimited"));
 
@@ -169,21 +171,41 @@ public class WebJDT extends WebServer {
 			return;
 		}
 
-		var pattern = SearchPattern.createPattern(element, IJavaSearchConstants.REFERENCES);
+		int searchFor = IJavaSearchConstants.REFERENCES;
+		if ("write".equals(access))
+			searchFor = IJavaSearchConstants.WRITE_ACCESSES;
+		else if ("read".equals(access)) //
+			searchFor = IJavaSearchConstants.READ_ACCESSES;
 		var scope = searchScope(projectName);
+		var participants = new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()};
 		var matches = new ArrayList<SearchMatch>();
-		new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
-			new SearchRequestor() {
-				public void acceptSearchMatch (SearchMatch match) {
-					if (match.getAccuracy() == SearchMatch.A_ACCURATE) matches.add(match);
-				}
-			}, new NullProgressMonitor());
+		var requestor = new SearchRequestor() {
+			public void acceptSearchMatch (SearchMatch match) {
+				if (match.getAccuracy() == SearchMatch.A_ACCURATE) matches.add(match);
+			}
+		};
+		ArrayList<SearchMatch> deduped = matches;
+		if (access == null) {
+			// WRITE_ACCESSES includes initializers that REFERENCES misses, search both and dedupe.
+			new SearchEngine().search(SearchPattern.createPattern(element, IJavaSearchConstants.WRITE_ACCESSES), participants, scope,
+				requestor, new NullProgressMonitor());
+			new SearchEngine().search(SearchPattern.createPattern(element, IJavaSearchConstants.REFERENCES), participants, scope,
+				requestor, new NullProgressMonitor());
+			// Remove duplicates, keeping order (writes first, then remaining references).
+			deduped = new ArrayList<SearchMatch>();
+			var dedupeSeen = new LinkedHashSet<String>();
+			for (var m : matches)
+				if (m.getResource() != null && dedupeSeen.add(m.getResource().getFullPath() + ":" + m.getOffset())) deduped.add(m);
+		} else {
+			new SearchEngine().search(SearchPattern.createPattern(element, searchFor), participants, scope, requestor,
+				new NullProgressMonitor());
+		}
 
 		var json = new Json();
 		json.object();
 		json.array("references");
 		int total = 0;
-		for (var match : matches) {
+		for (var match : deduped) {
 			var resource = match.getResource();
 			if (resource == null) continue;
 			String fp = filePath(resource);
@@ -198,6 +220,8 @@ public class WebJDT extends WebServer {
 			if (match.getElement() instanceof IMethod enclosing) {
 				json.set("enclosingType", enclosing.getDeclaringType().getFullyQualifiedName());
 				json.set("enclosingMethod", enclosing.getElementName());
+			} else if (match.getElement() instanceof IMember enclosing) {
+				json.set("enclosingType", enclosing.getDeclaringType().getFullyQualifiedName());
 			}
 			var source = getSource(match);
 			if (source != null) {

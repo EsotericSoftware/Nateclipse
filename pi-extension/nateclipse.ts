@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createReadTool, highlightCode } from "@mariozechner/pi-coding-agent";
+import { createReadTool, highlightCode, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
@@ -15,7 +15,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "read",
 		label: "Read",
-		description: originalRead.description,
+		promptSnippet: originalRead.promptSnippet,
+		description: `Read the contents of a text or image file. Text file output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024} KB. Use offset/limit for large files. Images are sent as attachments`,
+		promptGuidelines: originalRead.promptGuidelines,
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to the file to read, relative or absolute" }),
 			type: Type.Optional(Type.String({ description: "Java type name or pattern with * and ? wildcards. Resolves to file path overriding path parameter" })),
@@ -37,9 +39,6 @@ export default function (pi: ExtensionAPI) {
 				result.content[0].text = resolvedPath + "\n" + result.content[0].text;
 			return result;
 		},
-		renderResult(r, { isPartial }, theme) { _theme = theme;
-			return new Text(r.content[0]?.text, 0, 0);
-		},
 	});
 
 	// ---- java_grep ----
@@ -56,7 +55,7 @@ export default function (pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_grep") + accent(args.type) + extra(args.pattern) + " " + (args.flags || "-n");
+			let text = tool("java_grep") + accent(args.type) + extra("project", project) + extra(args.pattern) + " " + (args.flags || "-n");
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -177,7 +176,8 @@ export default function (pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			return new Text(tool("java_method") + type(args.type, args.method, args.paramTypes) + "\n", 0, 0);
+			let text = tool("java_method") + type(args.type, args.method, args.paramTypes) + extra("project", args.project);
+			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
@@ -208,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_find_type") + accent(args.name);
+			let text = tool("java_find_type") + accent(args.name) + extra("project", args.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -283,7 +283,8 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			return new Text(tool("java_errors") + "\n", 0, 0);
+			let text = tool("java_errors") + extra("limit", args.limit, "project", args.project);
+			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_errors", params, signal);
@@ -315,17 +316,19 @@ export default function (pi: ExtensionAPI) {
 		label: "Java References",
 		promptSnippet: "Show all references to a Java type, method, or field",
 		promptGuidelines: ["Prefer java_references over bash grep for finding usage of Java elements"],
-		description: "Shows enclosing method name for each reference",
+		description: "Shows enclosing method name for each reference. Can filter to specific paths and field reads/writes",
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			member: Type.Optional(Type.String({ description: "Method or field. Omit to find references to the type" })),
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method eg: String,int" })),
-			file: Type.Optional(Type.String({ description: "Filter results to file paths matching this substring" })),
+			access: Type.Optional(StringEnum(["read", "write"] as const, { description: "Filter to field read or write accesses" })),
+			file: Type.Optional(Type.String({ description: "Filter to file paths matching this substring" })),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_references") + type(args.type, args.member, args.paramTypes) + extra("file", args.file, "project", args.project);
+			let text = tool("java_references") + type(args.type, args.member, args.paramTypes)
+				+ extra("access", args.access, "limit", args.limit, "file", args.file, "project", args.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -333,9 +336,9 @@ export default function (pi: ExtensionAPI) {
 			if (data.total === 0) return { content: [{ type: "text" as const, text: "No references found" }], details: {} };
 			const text = groupByFile(data.references, ctx.cwd, (r) => {
 				let s = `${r.line}`;
-				if (r.enclosingType && r.enclosingMethod) {
+				if (r.enclosingType) {
 					const simple = r.enclosingType.split(".").pop();
-					s += `  ${simple}.${r.enclosingMethod}`;
+					s += r.enclosingMethod ? `  ${simple}.${r.enclosingMethod}` : `  ${simple}`;
 				}
 				if (r.context) s += `  ${r.context}`;
 				return s;
@@ -350,7 +353,7 @@ export default function (pi: ExtensionAPI) {
 			const w = maxLineWidth(data.references);
 			return renderGrouped(data.references, cwd, (r) => {
 				let s = paddedLine(r.line, w);
-				if (r.enclosingType && r.enclosingMethod) s += "  " + accent(r.enclosingType.split(".").pop() + "." + r.enclosingMethod);
+				if (r.enclosingType) s += "  " + accent(r.enclosingType.split(".").pop() + (r.enclosingMethod ? "." + r.enclosingMethod : ""));
 				if (r.context) s += "  " + r.context;
 				return s;
 			}, data.limited ? `Showing ${data.references.length} of ${data.total}.` : undefined);
@@ -362,7 +365,7 @@ export default function (pi: ExtensionAPI) {
 		name: "java_hierarchy",
 		label: "Java Type Hierarchy",
 		promptSnippet: "Show Java type hierarchy",
-		description: "Shows subtypes/implementors, supertypes, or full hierarchy. Optional filter for types that override a specific method",
+		description: "Shows subtypes/implementors, supertypes, or full hierarchy. Can filter to types that override a specific method",
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			direction: Type.Optional(StringEnum(["sub", "super", "all"] as const, {
@@ -414,7 +417,7 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_callers") + type(args.type, args.method, args.paramTypes) + extra("project", args.project);
+			let text = tool("java_callers") + type(args.type, args.method, args.paramTypes) + extra("limit", args.limit, "project", args.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -422,9 +425,9 @@ export default function (pi: ExtensionAPI) {
 			if (data.total === 0) return { content: [{ type: "text" as const, text: "No callers found" }], details: {} };
 			const text = groupByFile(data.callers, ctx.cwd, (r) => {
 				let s = `${r.line}`;
-				if (r.enclosingType && r.enclosingMethod) {
+				if (r.enclosingType) {
 					const simple = r.enclosingType.split(".").pop();
-					s += `  ${simple}.${r.enclosingMethod}`;
+					s += r.enclosingMethod ? `  ${simple}.${r.enclosingMethod}` : `  ${simple}`;
 				}
 				if (r.context) s += `  ${r.context}`;
 				return s;
@@ -439,7 +442,7 @@ export default function (pi: ExtensionAPI) {
 			const w = maxLineWidth(data.callers);
 			return renderGrouped(data.callers, cwd, (r) => {
 				let s = paddedLine(r.line, w);
-				if (r.enclosingType && r.enclosingMethod) s += "  " + accent(r.enclosingType.split(".").pop() + "." + r.enclosingMethod);
+				if (r.enclosingType) s += "  " + accent(r.enclosingType.split(".").pop() + (r.enclosingMethod ? "." + r.enclosingMethod : ""));
 				if (r.context) s += "  " + r.context;
 				return s;
 			}, data.limited ? `Showing ${data.callers.length} of ${data.total}.` : undefined);
@@ -450,7 +453,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "java_classpath",
 		label: "Java Classpath",
-		promptSnippet: "Provides the classpath for a Java project and all dependencies",
+		promptSnippet: "Provides the classpath for a Java project and all dependencies so main classes can be run",
 		description: "Use with bash java @file to run Java classes in the project",
 		parameters: Type.Object({
 			project: Type.String({ description: "Eclipse project name" }),
@@ -586,7 +589,11 @@ function type(type: string, member?: string, paramTypes?: string): string {
 	return text;
 }
 function extra(...args: Array<string | number | undefined | null>): string {
-	if (args.length == 1) return " " + yellow(args[0]);
+	if (args.length == 1) {
+		const value = args[0];
+		if (value === undefined || value === null || value === "") return "";
+		return " " + yellow(value);
+	}
 	let text = "";
 	for (let i = 0; i < args.length; i += 2) {
 		const value = args[i + 1];
