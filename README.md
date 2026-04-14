@@ -6,17 +6,22 @@ This Eclipse plugin improves your Java coding experience.
 
 Eclipse JDT functionality is exposed over HTTP so coding agents can use it.
 
-Eclipse already has your project setup, symbol database, and builds incrementally in the background. This plugin lets your clanker check compilation, efficiently explore the codebase, and organize imports without wasting tokens on `grep` and manual edits. It can also get the classpath of an Eclipse project, with all dependencies, so it can run a main method using bash.
+Eclipse already has your project setup, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, and quickly check compilation succeeds, without wasting tokens on `grep` and manual edits. It can also access the classpath of an Eclipse project, with all dependencies, to run code in the project.
 
 Tools provided:
 
-* `jdt_errors` check compilation errors/warnings (refreshes workspace, waits for build)
-* `jdt_references` find all references to a type, method, or field (shows enclosing method)
-* `jdt_hierarchy` subtypes, supertypes, or full hierarchy (optionally filtered to method overrides)
-* `jdt_search_type` find types by name (supports `*` and `?`)
-* `jdt_members` list fields and methods with signatures, modifiers, line numbers (includes inherited)
-* `jdt_organize_imports` add missing imports, remove unused, resolve ambiguous types (auto-resolves single conflicts via build verification)
-* `jdt_classpath` get resolved classpath for running Java classes via bash
+* `java_grep` Grep source files of Java types matched by name or pattern.
+* `java_members` Show fields and methods of a Java type.
+* `java_method` Show the source code of a Java method, without over/under reading.
+* `java_find_type` Search Java types by name or wildcard pattern.
+* `java_organize_imports` Automatically add/remove Java imports, with conflict resolution.
+* `java_errors` Report Java compilation errors and warnings.
+* `java_references` Show all references to a Java type, method, or field.
+* `java_hierarchy` Show subtypes/implementors, supertypes, or full class hierarchy.
+* `java_callers` Show all callers of a Java method.
+* `java_classpath` Provides the classpath for a Java project and all dependencies, so main classes can be run in the project.
+
+The `read` tool is enhanced with a `type` parameter for reading Java source by type name rather than filesystem path.
 
 ## Tabs
 
