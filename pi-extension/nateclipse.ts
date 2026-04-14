@@ -96,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java Members",
 		promptSnippet: "Show fields and methods of a Java type",
 		description: "Shows signatures, return types, and modifiers. Includes inherited members",
-		promptGuidelines: ["Use java_members to explore all fields/methods on a class"]
+		promptGuidelines: ["Use java_members to explore all fields/methods on a class"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
@@ -176,7 +176,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java Method",
 		promptSnippet: "Show the source code of a Java method",
 		description: "Returns exact method body without over/under reading",
-		promptGuidelines: ["Use java_method instead of read to see an entire Java method"]
+		promptGuidelines: ["Use java_method instead of read to see an entire Java method"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			method: Type.String({ description: "Method name" }),
