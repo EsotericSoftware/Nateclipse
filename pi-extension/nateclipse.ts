@@ -15,9 +15,12 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "read",
 		label: "Read",
-		promptSnippet: originalRead.promptSnippet,
+		promptSnippet: "Read file contents",
 		description: `Read the contents of a text or image file. Text file output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024} KB. Use offset/limit for large files. Images are sent as attachments`,
-		promptGuidelines: originalRead.promptGuidelines,
+		promptGuidelines: [
+			"Use read to examine files instead of cat or sed",
+			"To read a Java file when the path is unknown, use read with a Java type name or pattern. Don't waste a turn on bash find + read with path",
+		],
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to the file to read, relative or absolute" }),
 			type: Type.Optional(Type.String({ description: "Java type name or pattern with * and ? wildcards. Resolves to file path overriding path parameter" })),
@@ -25,7 +28,7 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ description: "Maximum lines to read" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			let text = tool("read") + accent(args.type || args.path) + extra("offset", args.offset, "limit", args.limit) + "\n";
+			let text = tool("read") + accent(args.type || args.path) + extra("offset", args.offset, "limit", args.limit);
 			return new Text(text, 0, 0);
 		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -46,8 +49,11 @@ export default function (pi: ExtensionAPI) {
 		name: "java_grep",
 		label: "Java Grep",
 		promptSnippet: "Grep source files of Java types matched by name or pattern",
-		promptGuidelines: ["Prefer java_grep over bash grep for finding text in Java source"],
 		description: "Resolves type to file, then runs grep. All grep flags supported",
+		promptGuidelines: [
+			"The java_* tools are powerful and efficient, use them whenever possible",
+			"Use java_grep instead of bash grep to find text in Java source",
+		],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards to grep multiple files" }),
 			pattern: Type.String({ description: "Grep pattern" }),
@@ -90,6 +96,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java Members",
 		promptSnippet: "Show fields and methods of a Java type",
 		description: "Shows signatures, return types, and modifiers. Includes inherited members",
+		promptGuidelines: ["Use java_members to explore all fields/methods on a class"]
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
@@ -169,6 +176,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java Method",
 		promptSnippet: "Show the source code of a Java method",
 		description: "Returns exact method body without over/under reading",
+		promptGuidelines: ["Use java_method instead of read to see an entire Java method"]
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			method: Type.String({ description: "Method name" }),
@@ -201,8 +209,8 @@ export default function (pi: ExtensionAPI) {
 		name: "java_find_type",
 		label: "Java Find Type",
 		promptSnippet: "Search Java types by name or wildcard pattern",
-		promptGuidelines: ["Prefer java_find_type over bash find for finding Java files containing a type"],
 		description: "Returns file paths and line numbers",
+		promptGuidelines: ["Use java_find_type instead of bash find to find which file contains a Java type"],
 		parameters: Type.Object({
 			name: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
@@ -236,6 +244,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java Organize Imports",
 		promptSnippet: "Automatically add/remove Java imports",
 		description: "",
+		promptGuidelines: ["Use java_organize_imports instead of editing imports manually"],
 		parameters: Type.Object({
 			file: Type.Optional(Type.String({ description: "Path to the Java file" })),
 			type: Type.Optional(Type.String({ description: "Type name or pattern with * and ? wildcards. Resolves to file, overriding file parameter" })),
@@ -277,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java Errors",
 		promptSnippet: "Report Java compilation errors and warnings",
 		description: "Refreshes workspace and waits for build to complete",
-		promptGuidelines: ["After editing Java files use java_errors to verify the project compiles"],
+		promptGuidelines: ["Verify projects compile after editing"],
 		parameters: Type.Object({
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
@@ -315,8 +324,8 @@ export default function (pi: ExtensionAPI) {
 		name: "java_references",
 		label: "Java References",
 		promptSnippet: "Show all references to a Java type, method, or field",
-		promptGuidelines: ["Prefer java_references over bash grep for finding usage of Java elements"],
 		description: "Shows enclosing method name for each reference. Can filter to specific paths and field reads/writes",
+		promptGuidelines: ["Use java_references instead of bash grep to find usage of a Java type/field/method or field writes"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			member: Type.Optional(Type.String({ description: "Method or field. Omit to find references to the type" })),
@@ -453,8 +462,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "java_classpath",
 		label: "Java Classpath",
-		promptSnippet: "Provides the classpath for a Java project and all dependencies so main classes can be run",
-		description: "Use with bash java @file to run Java classes in the project",
+		promptSnippet: "Classpath for Java project and all dependencies to run main classes",
+		description: "Use with bash java @file to run Java classes in a project",
 		parameters: Type.Object({
 			project: Type.String({ description: "Eclipse project name" }),
 		}),

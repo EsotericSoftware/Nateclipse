@@ -43,7 +43,7 @@ import nateclipse.utils.Json;
 import nateclipse.utils.WebServer;
 
 public class WebJDT extends WebServer {
-	static final int DEFAULT_LIMIT = 50;
+	static final int defaultLimit = 50;
 
 	private final Object organizeImportsLock = new Object();
 
@@ -70,7 +70,7 @@ public class WebJDT extends WebServer {
 	void java_errors (Exchange exchange) throws Throwable {
 		var query = exchange.decodeQuery();
 		String projectName = query.get("project");
-		int limit = intParam(query, "limit", DEFAULT_LIMIT);
+		int limit = intParam(query, "limit", defaultLimit);
 		boolean unlimited = "true".equals(query.get("unlimited"));
 
 		var root = ResourcesPlugin.getWorkspace().getRoot();
@@ -154,7 +154,7 @@ public class WebJDT extends WebServer {
 		String paramTypes = query.get("paramTypes");
 		String fileFilter = query.get("file");
 		String access = query.get("access");
-		int limit = intParam(query, "limit", DEFAULT_LIMIT);
+		int limit = intParam(query, "limit", defaultLimit);
 		boolean unlimited = "true".equals(query.get("unlimited"));
 
 		if (typeName == null || typeName.isEmpty()) {
@@ -481,7 +481,7 @@ public class WebJDT extends WebServer {
 		String typeName = query.get("type");
 		String methodName = query.get("method");
 		String paramTypes = query.get("paramTypes");
-		int limit = intParam(query, "limit", DEFAULT_LIMIT);
+		int limit = intParam(query, "limit", defaultLimit);
 		boolean unlimited = "true".equals(query.get("unlimited"));
 
 		if (typeName == null || typeName.isEmpty()) {
