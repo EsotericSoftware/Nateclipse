@@ -10,7 +10,7 @@ Eclipse already has all your Java projects, builds incrementally in the backgrou
 
 ## Pi extensions
 
-Extensions are provided for the fantastic [Pi](https://pi.dev) coding harness are provided.
+Extensions are provided for the fantastic [Pi](https://pi.dev) coding harness.
 
 ### nateclipse.ts
 
