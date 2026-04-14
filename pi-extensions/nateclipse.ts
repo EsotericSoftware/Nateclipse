@@ -288,11 +288,10 @@ export default function (pi: ExtensionAPI) {
 		description: "Refreshes workspace and waits for build to complete",
 		promptGuidelines: ["Verify projects compile after editing"],
 		parameters: Type.Object({
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(args, theme) { _theme = theme;
-			let text = tool("java_errors") + extra("limit", args.limit, "project", args.project);
+			let text = tool("java_errors") + extra("limit", args.limit);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
