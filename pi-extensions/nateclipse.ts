@@ -112,7 +112,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_members", params, signal);
-			if (!data) return result("Type not found: " + params.type, { data });
+			if (data._error) return result(data._error + ": " + params.type);
 			if (!data.length) return result("Type has no members: " + params.type, { data });
 			const parts: string[] = [];
 			for (let i = 0; i < data.length; i++) {
@@ -196,7 +196,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params));
+			if (data._error) return result(data._error + ": " + typePlain(params));
 			const parts: string[] = [];
 			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
 			parts.push(data.source);
@@ -204,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Loading..."), 0, 0);
-			if (!r.details?.data) return new Text(r.content[0]?.text || "Type not found.", 0, 0);
+			if (!r.details?.data) return new Text(r.content[0]?.text || "Method not found.", 0, 0);
 			const { data, cwd } = r.details;
 			const header = data.file ? filePath(relPath(data.file, cwd)) + (data.line ? lineNumber(":" + data.line + (data.endLine ? "-" + data.endLine : "")) : "") : "";
 			const source = (data.source || "").split("\n").map((l: string) => javaCode(l)).join("\n");
@@ -269,11 +269,7 @@ export default function (pi: ExtensionAPI) {
 			const serverParams: any = { ...params };
 			if (!params.type) serverParams.file = path.resolve(ctx.cwd, params.file);
 			const data = await jdt("/java_organize_imports", serverParams, signal);
-			if (!data) {
-				const item = params.type ? "Type" : "File";
-				return result(item + " not found: " + (params.type || params.file),
-					{ notFound: params.type || params.file, item });
-			}
+			if (data._error) return result(data._error + ": " + (params.type || params.file));
 			if (data.organized) return result("Success");
 			const lines = ["Ambiguous imports, call again with resolve parameter:"];
 			for (const c of data.conflicts)
@@ -284,10 +280,7 @@ export default function (pi: ExtensionAPI) {
 			if (isPartial) return new Text(yellow("Organizing..."), 0, 0);
 			const text = r.content[0]?.text || "";
 			if (text === "Success") return new Text(green("Success."), 0, 0);
-			if (!r.details?.data) {
-				const item = r.details?.item || "Type";
-				return new Text(text || item + " not found: " + (r.details?.notFound || ""), 0, 0);
-			}
+			if (!r.details?.data) return new Text(text || "Not found.", 0, 0);
 			if (!r.details?.data.conflicts) return new Text(text, 0, 0);
 			const parts = [red("Ambiguous imports, call again with resolve parameter:")];
 			for (const c of r.details.data.conflicts)
@@ -312,6 +305,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_errors", params, signal);
+			if (data._error) return result(data._error);
 			if (data.total === 0) return result("None");
 			const text = groupByFile(data.errors, ctx.cwd, (e) => {
 				let s = ` :${e.line}  ${e.severity}: ${e.message}`;
@@ -357,7 +351,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_references", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params), { data });
+			if (data._error) return result(data._error + ": " + typePlain(params));
 			if (data.total === 0) return result("No references for: " + typePlain(params), { data });
 			const text = groupByFile(data.references, ctx.cwd, (r) => {
 				let s = `${r.line}`;
@@ -409,7 +403,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_hierarchy", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params), { data });
+			if (data._error) return result(data._error + ": " + typePlain(params));
 			if (data.length === 0) return result("No types in hierarchy for: " + typePlain(params), { data });
 			const lines = data.map((t: any) => {
 				let s = t.type;
@@ -450,7 +444,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_callers", params, signal);
-			if (!data) return result("Type not found: " + typePlain(params), { data });
+			if (data._error) return result(data._error + ": " + typePlain(params));
 			if (data.total === 0) return result("No callers for: " + typePlain(params), { data });
 			const text = groupByFile(data.callers, ctx.cwd, (r) => {
 				let s = `${r.line}`;
@@ -494,7 +488,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal) {
 			const data = await jdt("/java_classpath", params, signal);
-			if (!data) return result("Project not found: " + params.project);
+			if (data._error) return result(data._error + ": " + params.project);
 			return result(data.file, { data });
 		},
 		renderResult(r, { isPartial }, theme) {
@@ -512,23 +506,23 @@ async function jdt(path: string, params: Record<string, any>, signal?: AbortSign
 	const url = new URL(path, BASE);
 	for (const [k, v] of Object.entries(params))
 		if (v != null && v !== "") url.searchParams.set(k, String(v));
-	let result;
+	let response;
 	try {
-		result = await fetch(url.toString(), { signal });
+		response = await fetch(url.toString(), { signal });
 	} catch (e: any) {
 		throw new Error("Eclipse could not be reached on port: " + PORT);
 	}
-	if (!result.ok) {
-		const body = await result.text();
+	if (!response.ok) {
+		const body = await response.text();
+		let message = body;
 		try {
 			const json = JSON.parse(body);
-			if (json.error) throw new Error(json.error);
-		} catch (e) {
-			if (e instanceof Error && !e.message.startsWith("{")) throw e;
-		}
-		throw new Error(body);
+			if (json.error) message = json.error;
+		} catch (ignored) {}
+		if (response.status === 404) return { _error: message || "Not found" };
+		throw new Error(message);
 	}
-	return result.json();
+	return response.json();
 }
 
 function relPath(absPath: string, cwd: string): string {
@@ -557,7 +551,8 @@ function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string):
 
 async function resolveTypeToFile(typeName: string, project: string | undefined, signal?: AbortSignal): Promise<string> {
 	const data = await jdt("/java_resolve_type", { type: typeName, project }, signal);
-	if (!data.file) throw new Error(`No source file found for type: ${typeName}`);
+	if (data._error) throw new Error(data._error + ": " + typeName);
+	if (!data.file) throw new Error("No source file for type: " + typeName);
 	return data.file;
 }
 
