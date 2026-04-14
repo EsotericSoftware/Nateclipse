@@ -191,7 +191,7 @@ export default function (pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_method") + type(params.type, params.method, params.paramTypes) + extra("project", params.project);
+			let text = tool("java_method") + type(params) + extra("project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -351,7 +351,7 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_references") + type(params.type, params.member, params.paramTypes)
+			let text = tool("java_references") + type(params)
 				+ extra("access", params.access, "limit", params.limit, "file", params.file, "project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
@@ -402,7 +402,7 @@ export default function (pi: ExtensionAPI) {
 			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_hierarchy") + type(params.type, params.method, params.paramTypes);
+			let text = tool("java_hierarchy") + type(params);
 			if (params.direction && params.direction !== "sub") text += extra("direction", params.direction);
 			text += extra("project", params.project);
 			return new Text(text + "\n", 0, 0);
@@ -445,7 +445,7 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_callers") + type(params.type, params.method, params.paramTypes) + extra("limit", params.limit, "project", params.project);
+			let text = tool("java_callers") + type(params) + extra("limit", params.limit, "project", params.project);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -618,11 +618,12 @@ function accent(value: string): string {
 function tool(text: string): string {
 	return white(text + " ");
 }
-function type(type: string, member?: string, paramTypes?: string): string {
-	let text = accent(type);
+function type(params: any): string {
+	let text = accent(params.type);
+	const member = params.member || params.method;
 	if (member) {
 		text += white("#") + member;
-		if (paramTypes) text += javaCode("(" + paramTypes + ")");
+		if (params.paramTypes) text += javaCode("(" + params.paramTypes + ")");
 	}
 	return text;
 }
