@@ -475,7 +475,7 @@ async function jdt(path: string, params: Record<string, any>, signal?: AbortSign
 	try {
 		result = await fetch(url.toString(), { signal });
 	} catch (e: any) {
-		throw new Error("Eclipse not reachable on port " + PORT);
+		throw new Error("Eclipse could not be reached on port: " + PORT);
 	}
 	if (!result.ok) {
 		const body = await result.text();
