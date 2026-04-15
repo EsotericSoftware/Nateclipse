@@ -5,6 +5,8 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 
 const PORT = 9001;
+const projectParams = false;
+function optionalProject() { return projectParams ? { project: Type.Optional(Type.String({ description: "Eclipse project name" })) } : {}; }
 const BASE = `http://localhost:${PORT}`;
 
 export default function (pi: ExtensionAPI) {
@@ -24,7 +26,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to the file to read, relative or absolute" }),
 			type: Type.Optional(Type.String({ description: "Java type name or pattern with * and ? wildcards. Resolves to file path overriding path parameter" })),
-			project: Type.Optional(Type.String({ description: "Eclipse project name for Java type parameter" })),
+			...optionalProject(),
 			offset: Type.Optional(Type.Number({ description: "Line number to start reading from, 1-indexed" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum lines to read" })),
 		}),
@@ -60,7 +62,7 @@ export default function (pi: ExtensionAPI) {
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards to grep multiple files" }),
 			pattern: Type.String({ description: "Grep pattern" }),
 			flags: Type.Optional(Type.String({ description: "Grep flags eg: -i -n -A3 -B2 -C5. Default: -n" })),
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
 			let text = tool("java_grep") + accent(params.type) + extra("project", params.project) + extra(params.pattern) + " " + (params.flags || "-n");
@@ -105,7 +107,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: ["Use java_members to explore all fields/methods on a class"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
 			let text = tool("java_members") + accent(params.type) + extra("project", params.project);
@@ -189,7 +191,7 @@ export default function (pi: ExtensionAPI) {
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			method: Type.String({ description: "Method name" }),
 			paramTypes: Type.Optional(Type.String({ description: "Comma-separated param types for overloaded methods" })),
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
 			let text = tool("java_method") + type(params) + extra("project", params.project);
@@ -222,7 +224,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: ["Use java_find_type instead of bash find to find which file contains a Java type"],
 		parameters: Type.Object({
 			name: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
 			let text = tool("java_find_type") + accent(params.name) + extra("project", params.project);
@@ -298,7 +300,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Refreshes workspace and waits for build to complete",
 		promptGuidelines: ["Verify projects compile after editing"],
 		parameters: Type.Object({
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
@@ -343,7 +345,7 @@ export default function (pi: ExtensionAPI) {
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method eg: String,int" })),
 			access: Type.Optional(StringEnum(["read", "write"] as const, { description: "Filter to field read or write accesses" })),
 			file: Type.Optional(Type.String({ description: "Filter to file paths matching this substring" })),
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
@@ -395,7 +397,7 @@ export default function (pi: ExtensionAPI) {
 			})),
 			method: Type.Optional(Type.String({ description: "Filter to types that override this method" })),
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method eg: String,int" })),
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
 			let text = tool("java_hierarchy") + type(params);
@@ -437,7 +439,7 @@ export default function (pi: ExtensionAPI) {
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			method: Type.String({ description: "Method name" }),
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method" })),
-			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
+			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
