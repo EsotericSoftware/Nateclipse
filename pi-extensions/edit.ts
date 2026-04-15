@@ -4,7 +4,7 @@
 // - Prefixes `No edits made.` when edits fail to make it clear.
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createEditTool } from "@mariozechner/pi-coding-agent";
+import { createEditTool, editToolDefinition } from "@mariozechner/pi-coding-agent";
 
 import { readFile } from "fs/promises";
 import { resolve } from "path";
@@ -32,6 +32,12 @@ export default function (pi: ExtensionAPI) {
 			"Keep edits[].oldText as small as possible while still being unique in the file, do not pad with large unchanged text",
 		],
 		parameters: originalEdit.parameters,
+		renderCall: editToolDefinition.renderCall,
+		// Built-in renderResult reuses lastComponent, causing stale cache + differential
+		// rendering artifacts. Force fresh component creation.
+		renderResult(r, options, theme, context) {
+			return editToolDefinition.renderResult!(r, options, theme, { ...context, lastComponent: undefined });
+		},
 		async execute(toolCallId, params, signal, onUpdate) {
 			try {
 				return await originalEdit.execute(toolCallId, params, signal, onUpdate);
