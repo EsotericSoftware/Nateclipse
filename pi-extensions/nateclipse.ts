@@ -38,10 +38,10 @@ export default function (pi: ExtensionAPI) {
 				resolvedPath = await resolveTypeToFile(params.type, undefined, signal);
 				params = { ...params, path: resolvedPath };
 			}
-			const result = await originalRead.execute(toolCallId, params, signal, onUpdate);
-			if (resolvedPath && result.content[0]?.type === "text")
-				result.content[0].text = resolvedPath + "\n" + result.content[0].text;
-			return result;
+			const readResult = await originalRead.execute(toolCallId, params, signal, onUpdate);
+			if (resolvedPath && readResult.content[0]?.type === "text")
+				readResult.content[0].text = resolvedPath + "\n" + readResult.content[0].text;
+			return readResult;
 		},
 	});
 
@@ -73,8 +73,8 @@ export default function (pi: ExtensionAPI) {
 			const flagStr = params.flags || "-n";
 			const args = flagStr.split(/\s+/).filter(Boolean);
 			args.push(params.pattern, ...files);
-			const result = await pi.exec("grep", args, { signal });
-			const output = (result.stdout || "").trim();
+			const grepResult = await pi.exec("grep", args, { signal });
+			const output = (grepResult.stdout || "").trim();
 			if (!output) return result("No matches for: " + params.pattern + "\n" + files.join("\n"), { files });
 			const cleaned = output.split("\n").map((l: string) => l.replace(/^(\d+):/, "$1  ")).join("\n");
 			return result(cleaned, { lines: output.split("\n"), files });
