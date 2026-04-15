@@ -24,18 +24,19 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to the file to read, relative or absolute" }),
 			type: Type.Optional(Type.String({ description: "Java type name or pattern with * and ? wildcards. Resolves to file path overriding path parameter" })),
+			project: Type.Optional(Type.String({ description: "Eclipse project name for Java type parameter" })),
 			offset: Type.Optional(Type.Number({ description: "Line number to start reading from, 1-indexed" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum lines to read" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("read") + accent(params.type || params.path) + extra("offset", params.offset, "limit", params.limit);
+			let text = tool("read") + accent(params.type || params.path) + extra("project", params.project, "offset", params.offset, "limit", params.limit);
 			return new Text(text, 0, 0);
 		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (!params.type && !params.path) throw new Error("Missing parameter: file or type");
 			let resolvedPath: string | null = null;
 			if (params.type) {
-				resolvedPath = await resolveTypeToFile(params.type, undefined, signal);
+				resolvedPath = await resolveTypeToFile(params.type, params.project, signal);
 				params = { ...params, path: resolvedPath };
 			}
 			const readResult = await originalRead.execute(toolCallId, params, signal, onUpdate);
@@ -297,10 +298,11 @@ export default function (pi: ExtensionAPI) {
 		description: "Refreshes workspace and waits for build to complete",
 		promptGuidelines: ["Verify projects compile after editing"],
 		parameters: Type.Object({
+			project: Type.Optional(Type.String({ description: "Eclipse project name" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_errors") + extra("limit", params.limit);
+			let text = tool("java_errors") + extra("project", params.project, "limit", params.limit);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -346,7 +348,7 @@ export default function (pi: ExtensionAPI) {
 		}),
 		renderCall(params, theme) { _theme = theme;
 			let text = tool("java_references") + type(params)
-				+ extra("access", params.access, "limit", params.limit, "file", params.file, "project", params.project);
+				+ extra("project", params.project, "access", params.access, "limit", params.limit, "file", params.file);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -439,7 +441,7 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_callers") + type(params) + extra("limit", params.limit, "project", params.project);
+			let text = tool("java_callers") + type(params) + extra("project", params.project, "limit", params.limit);
 			return new Text(text + "\n", 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
