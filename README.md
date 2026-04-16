@@ -39,7 +39,7 @@ This extension improves the edit tool by providing context when edits fail:
 
 ### json-fix.ts
 
-Some LLM APIs give literal tabs and other bad data in their JSON response, stopping the agent. This extension monkey patches `fetch` to santize control characters in SSE streams that break `JSON.parse`. It fixes this error:
+Some LLM APIs give literal tabs and other bad data in their JSON response, stopping the agent. This extension allows the agent to recover when the agent stops due to this error:
 
 ```
 Error: Bad control character in string literal in JSON at position 123

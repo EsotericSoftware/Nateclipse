@@ -1,33 +1,35 @@
-// Sanitize control characters in SSE streams that break JSON.parse.
-// Some LLM APIs send literal tabs etc in JSON SSE data.
+// Lets the agent recover when an LLM sends literal tabs etc in JSON SSE data.
+// manuranga https://github.com/badlogic/pi-mono/issues/2681#issuecomment-4228545404
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 
-const originalFetch = globalThis.fetch;
-globalThis.fetch = async (input, init) => {
-	const response = await originalFetch(input, init);
-	const contentType = response.headers.get("content-type") || "";
-	if (!contentType.includes("text/event-stream") || !response.body) return response;
+export default function (pi: ExtensionAPI) {
+	let failedMessageTimestamp: number | undefined;
 
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	const encoder = new TextEncoder();
-	const transformed = new ReadableStream<Uint8Array>({
-		async pull(controller) {
-			const { done, value } = await reader.read();
-			if (done) { controller.close(); return; }
-			let text = decoder.decode(value, { stream: true });
-			// eslint-disable-next-line no-control-regex
-			text = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, (ch) => {
-				return `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
-			});
-			controller.enqueue(encoder.encode(text));
-		},
-		cancel() { reader.cancel(); },
+	pi.on("agent_end", (event) => {
+		const last = event.messages[event.messages.length - 1];
+		if (!last || last.role !== "assistant") return;
+
+		const msg = last as AssistantMessage;
+		if (msg.stopReason !== "error" || !msg.errorMessage) return;
+		if (!/Bad control character/i.test(msg.errorMessage)) return;
+
+		failedMessageTimestamp = msg.timestamp;
+
+		setTimeout(() => pi.sendUserMessage("edit tool failed, escape tab as \\t"), 100);
 	});
-	return new Response(transformed, {
-		status: response.status, statusText: response.statusText, headers: response.headers,
-	});
-};
 
-export default function (pi: ExtensionAPI) {}
+	pi.on("context", (event) => {
+		if (failedMessageTimestamp === undefined) return;
+		const timestamp = failedMessageTimestamp;
+		failedMessageTimestamp = undefined;
+		return {
+			messages: event.messages.filter((m) => {
+				if (m.role !== "assistant") return true;
+				const msg = m as AssistantMessage;
+				return msg.timestamp !== timestamp;
+			}),
+		};
+	});
+}
