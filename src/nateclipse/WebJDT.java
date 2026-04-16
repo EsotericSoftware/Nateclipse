@@ -116,6 +116,7 @@ public class WebJDT extends WebServer {
 			String message = marker.getAttribute(IMarker.MESSAGE, "");
 
 			json.object();
+			json.set("project", resource.getProject().getName());
 			json.set("file", fp);
 			json.set("line", line);
 			json.set("severity", severity == IMarker.SEVERITY_ERROR ? "error" : "warning");

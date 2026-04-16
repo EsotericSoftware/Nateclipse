@@ -4,9 +4,9 @@
 - `WebJDT` HTTP server exposing JDT functionality.
 - Pi extension `pi-extension/nateclipse.ts` providing tools that hit WebJDT.
 
-Plugin runs in a separate Eclipse workspace for plugin development, not the main workspace the tools query.
+Don't use java_* tools, they can't find Nateclipse classes because they are in a workspace for plugin development, not in the main workspace that runs WebJDT.
 
-## Pi documenation
+## Pi documentation
 
 - Main: C:\Apps\node\node_modules\@mariozechner\pi-coding-agent\README.md
 - Additional: C:\Apps\node\node_modules\@mariozechner\pi-coding-agent\docs

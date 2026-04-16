@@ -298,7 +298,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java Errors",
 		promptSnippet: "Report Java compilation errors and warnings",
 		description: "Refreshes workspace and waits for build to complete",
-		promptGuidelines: ["Verify projects compile after editing"],
+		promptGuidelines: ["Verify projects compile after all editing is complete"],
 		parameters: Type.Object({
 			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
@@ -542,8 +542,9 @@ function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string):
 	const byFile = new Map<string, string[]>();
 	for (const r of data) {
 		const file = relPath(r.file, cwd);
-		if (!byFile.has(file)) byFile.set(file, []);
-		byFile.get(file)!.push(formatMatch(r));
+		const key = r.project ? `${r.project}  ${file}` : file;
+		if (!byFile.has(key)) byFile.set(key, []);
+		byFile.get(key)!.push(formatMatch(r));
 	}
 	const parts: string[] = [];
 	for (const [file, lines] of byFile) {
@@ -562,14 +563,16 @@ async function resolveTypeToFile(typeName: string, project: string | undefined, 
 
 function renderGrouped(items: any[], cwd: string, formatItem: (r: any) => string, limitMsg?: string): Text {
 	const byFile = new Map<string, string[]>();
+	const projects = new Map<string, string | undefined>();
 	for (const r of items) {
 		const file = relPath(r.file, cwd);
-		if (!byFile.has(file)) byFile.set(file, []);
+		if (!byFile.has(file)) { byFile.set(file, []); projects.set(file, r.project); }
 		byFile.get(file)!.push(formatItem(r));
 	}
 	const parts: string[] = [];
 	for (const [file, lines] of byFile) {
-		parts.push(filePath(file));
+		const proj = projects.get(file);
+		parts.push(proj ? accent(proj) + "  " + filePath(file) : filePath(file));
 		for (const line of lines) parts.push(line);
 	}
 	if (limitMsg) parts.push(_theme.fg("dim", limitMsg));
