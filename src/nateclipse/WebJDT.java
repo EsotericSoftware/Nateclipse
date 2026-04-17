@@ -18,6 +18,7 @@ import java.util.concurrent.Executor;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.Path;
@@ -76,7 +77,7 @@ public class WebJDT extends WebServer {
 		case "/java_errors" -> java_errors(exchange);
 		case "/java_references" -> java_references(exchange);
 		case "/java_hierarchy" -> java_hierarchy(exchange);
-		case "/java_find_type" -> java_find_type(exchange);
+		case "/java_type" -> java_type(exchange);
 		case "/java_members" -> java_members(exchange);
 		case "/java_method" -> java_method(exchange);
 		case "/java_callers" -> java_callers(exchange);
@@ -311,50 +312,103 @@ public class WebJDT extends WebServer {
 		exchange.responseJson(200, json.toString());
 	}
 
-	void java_find_type (Exchange exchange) throws Throwable {
+	void java_type (Exchange exchange) throws Throwable {
 		var query = exchange.decodeQuery();
 		String projectName = query.get("project");
-		String name = query.get("name");
+		String typeName = query.get("type");
+		int limit = intParam(query, "limit", 500);
 
-		if (name == null || name.isEmpty()) {
-			error(exchange, 400, "Missing parameter: name");
+		if (typeName == null || typeName.isEmpty()) {
+			error(exchange, 400, "Missing parameter: type");
 			return;
 		}
 
-		// Support unqualified exact match as well as wildcards.
-		int matchRule = name.contains("*") || name.contains("?") ? SearchPattern.R_PATTERN_MATCH | SearchPattern.R_CASE_SENSITIVE
-			: SearchPattern.R_EXACT_MATCH | SearchPattern.R_CASE_SENSITIVE;
-
-		var pattern = SearchPattern.createPattern(name, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS, matchRule);
-		var scope = searchScope(projectName);
-		var matches = new ArrayList<SearchMatch>();
-		new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
-			new SearchRequestor() {
-				public void acceptSearchMatch (SearchMatch match) {
-					if (match.getAccuracy() == SearchMatch.A_ACCURATE) matches.add(match);
-				}
-			}, new NullProgressMonitor());
+		var types = searchTypes(projectName, typeName);
+		if (types.isEmpty()) {
+			error(exchange, 404, "Type not found: " + typeName);
+			return;
+		}
 
 		var json = new Json();
 		json.array();
-		for (var match : matches) {
-			if (!(match.getElement() instanceof IType t)) continue;
-			if (t.getResource() == null) continue; // Skip binary types.
+		boolean single = types.size() == 1;
+		for (var t : types) {
 			json.object();
 			json.set("type", t.getFullyQualifiedName());
 			var resource = t.getResource();
-			if (resource != null) {
-				json.set("file", filePath(resource));
-				var cu = t.getCompilationUnit();
-				if (cu != null) {
-					var buffer = cu.getBuffer();
-					if (buffer != null) json.set("line", lineNumber(buffer.getContents(), match.getOffset()));
+			if (resource != null) json.set("file", filePath(resource));
+
+			String source = null;
+			var cu = t.getCompilationUnit();
+			if (cu != null) {
+				var buffer = cu.getBuffer();
+				if (buffer != null) source = buffer.getContents();
+			}
+
+			if (single && source != null) {
+				var range = t.getSourceRange();
+				if (range != null && range.getOffset() >= 0 && range.getLength() > 0) {
+					int startLine = lineNumber(source, range.getOffset());
+					String typeSource = source.substring(range.getOffset(), range.getOffset() + range.getLength());
+					String[] typeLines = typeSource.split("\n", -1);
+					int totalLines = typeLines.length;
+					int shownLines = Math.min(limit, totalLines);
+
+					String shownSource;
+					if (shownLines < totalLines) {
+						var sb = new StringBuilder();
+						for (int i = 0; i < shownLines; i++) {
+							if (i > 0) sb.append('\n');
+							sb.append(typeLines[i]);
+						}
+						shownSource = sb.toString();
+						json.set("truncated", true);
+					} else
+						shownSource = typeSource;
+
+					json.set("line", startLine);
+					json.set("endLine", startLine + shownLines - 1);
+					json.set("totalLines", totalLines);
+					json.set("source", shownSource);
 				}
+			} else if (source != null) {
+				var nameRange = t.getNameRange();
+				if (nameRange != null) json.set("line", lineNumber(source, nameRange.getOffset()));
 			}
 			json.pop();
 		}
 		json.pop();
 		exchange.responseJson(200, json.toString());
+	}
+
+	/** Search for types by simple name, fully-qualified name, or wildcard pattern. Returns source types only. */
+	ArrayList<IType> searchTypes (String projectName, String typeName) throws CoreException {
+		boolean hasWildcards = typeName.contains("*") || typeName.contains("?");
+
+		// FQN exact match: direct lookup first.
+		if (typeName.contains(".") && !hasWildcards) {
+			var type = findType(projectName, typeName);
+			if (type != null && type.getResource() != null) {
+				var types = new ArrayList<IType>();
+				types.add(type);
+				return types;
+			}
+		}
+
+		int matchRule = hasWildcards ? SearchPattern.R_PATTERN_MATCH | SearchPattern.R_CASE_SENSITIVE
+			: SearchPattern.R_EXACT_MATCH | SearchPattern.R_CASE_SENSITIVE;
+		var pattern = SearchPattern.createPattern(typeName, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS,
+			matchRule);
+		var scope = searchScope(projectName);
+		var types = new ArrayList<IType>();
+		new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
+			new SearchRequestor() {
+				public void acceptSearchMatch (SearchMatch match) {
+					if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t)
+						if (t.getResource() != null) types.add(t); // Source types only.
+				}
+			}, new NullProgressMonitor());
+		return types;
 	}
 
 	void java_members (Exchange exchange) throws Throwable {
@@ -493,7 +547,7 @@ public class WebJDT extends WebServer {
 		int endLine = startLine + methodSource.split("\n", -1).length - 1;
 		json.set("line", startLine);
 		json.set("endLine", endLine);
-		json.set("source", stripIndent(methodSource));
+		json.set("source", methodSource);
 		if (!supers.isEmpty()) {
 			json.array("supers");
 			for (var info : supers) {
@@ -651,7 +705,7 @@ public class WebJDT extends WebServer {
 			String src = cuSource.substring(range.getOffset(), range.getOffset() + range.getLength());
 			info.startLine = startLine;
 			info.endLine = startLine + src.split("\n", -1).length - 1;
-			info.source = stripIndent(src);
+			info.source = src;
 		} else {
 			// No source available (e.g. binary with no attachment). Fall back to signature-only.
 			var src = superMethod.getSource();
@@ -1201,13 +1255,7 @@ public class WebJDT extends WebServer {
 			if (sb.length() > 0) sb.append('\n');
 			sb.append(lines[i]);
 		}
-		return sb.toString().stripIndent();
-	}
-
-	String stripIndent (String text) {
-		int nl = text.indexOf('\n');
-		if (nl < 0) return text;
-		return text.substring(0, nl) + "\n" + text.substring(nl + 1).stripIndent();
+		return sb.toString();
 	}
 
 	String getSource (SearchMatch match) throws JavaModelException {
