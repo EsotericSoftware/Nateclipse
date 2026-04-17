@@ -2,9 +2,9 @@
 
 - `TabLabelModifier` Tab label cleanup
 - `WebJDT` HTTP server exposing JDT functionality.
-- Pi extension `pi-extension/nateclipse.ts` providing tools that hit WebJDT.
+- Pi extension `pi-extensions/nateclipse.ts` providing tools that hit WebJDT.
 
-Don't use java_* tools, they can't find Nateclipse classes because they are in a workspace for plugin development, not in the main workspace that runs WebJDT.
+Don't use java_* tools, they can't find Nateclipse classes because those are in a workspace for plugin development, not in the main workspace that runs WebJDT.
 
 ## Pi documentation
 

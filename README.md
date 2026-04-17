@@ -18,7 +18,7 @@ This extension makes it easy for coding agents to use the JDT API. Tools provide
 
 * `java_grep` Grep source files of Java types matched by name or pattern.
 * `java_members` Show fields and methods of a Java type.
-* `java_method` Show the source code of a Java method, without over/under reading.
+* `java_method` Show the source code of a Java method, without over/under reading. Also include source for any super calls.
 * `java_find_type` Search Java types by name or wildcard pattern.
 * `java_organize_imports` Automatically add/remove Java imports, with conflict resolution. If there is only 1 conflict it is resolved automatically, without using an extra turn.
 * `java_errors` Report Java compilation errors and warnings. Eclipse builds in the background, so this is very fast.

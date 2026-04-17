@@ -185,7 +185,7 @@ export default function (pi: ExtensionAPI) {
 		name: "java_method",
 		label: "Java Method",
 		promptSnippet: "Show the source code of a Java method",
-		description: "Returns exact method body without over/under reading",
+		description: "Returns exact method body without over/under reading plus any super calls",
 		promptGuidelines: ["Use java_method instead of read to see an entire Java method"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
@@ -203,15 +203,36 @@ export default function (pi: ExtensionAPI) {
 			const parts: string[] = [];
 			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
 			parts.push(data.source);
+			if (Array.isArray(data.supers)) {
+				for (const s of data.supers) {
+					parts.push("");
+					const loc = s.file ? `${relPath(s.file, ctx.cwd)}` + (s.line ? `:${s.line}` : "") + (s.endLine ? `-${s.endLine}` : "") : `${s.type}#${s.method}`;
+					parts.push(loc);
+					parts.push(s.source);
+				}
+			}
 			return result(parts.join("\n"), { data, cwd: ctx.cwd });
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
 			if (isPartial) return new Text(yellow("Loading..."), 0, 0);
 			if (!r.details?.data) return new Text(r.content[0]?.text || "Method not found.", 0, 0);
 			const { data, cwd } = r.details;
-			const header = data.file ? filePath(relPath(data.file, cwd)) + (data.line ? lineNumber(":" + data.line + (data.endLine ? "-" + data.endLine : "")) : "") : "";
-			const source = (data.source || "").split("\n").map((l: string) => javaCode(l)).join("\n");
-			return new Text(header + "\n" + source, 0, 0);
+			const renderBody = (file: string | undefined, line: number | undefined, endLine: number | undefined, src: string, fallback: string) => {
+				const header = file
+					? filePath(relPath(file, cwd)) + (line ? lineNumber(":" + line + (endLine ? "-" + endLine : "")) : "")
+					: fallback;
+				const body = (src || "").split("\n").map((l: string) => javaCode(l)).join("\n");
+				return header + "\n" + body;
+			};
+			const pieces: string[] = [];
+			pieces.push(renderBody(data.file, data.line, data.endLine, data.source, ""));
+			if (Array.isArray(data.supers)) {
+				for (const s of data.supers) {
+					pieces.push("");
+					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${s.type}#${s.method}`)));
+				}
+			}
+			return new Text(pieces.join("\n"), 0, 0);
 		},
 	});
 
