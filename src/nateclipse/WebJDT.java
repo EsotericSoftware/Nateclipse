@@ -17,6 +17,7 @@ import java.util.concurrent.Executor;
 
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IResourceVisitor;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
@@ -193,6 +194,31 @@ public class WebJDT extends WebServer {
 			return;
 		}
 
+		// Validate fileFilter: if set and no workspace file matches the substring, fail fast rather
+		// than silently returning "No references" which is ambiguous between "file doesn't exist" and
+		// "file exists but has no references". Early-exit on first match so typical cases are fast.
+		if (fileFilter != null && !fileFilter.isEmpty()) {
+			var found = new boolean[] {false};
+			IResource target = projectName != null && !projectName.isEmpty()
+				? ResourcesPlugin.getWorkspace().getRoot().getProject(projectName)
+				: ResourcesPlugin.getWorkspace().getRoot();
+			if (target.exists()) {
+				IResourceVisitor visitor = res -> {
+					if (found[0]) return false;
+					if (res.getType() == IResource.FILE && filePath(res).contains(fileFilter)) {
+						found[0] = true;
+						return false;
+					}
+					return true;
+				};
+				target.accept(visitor);
+			}
+			if (!found[0]) {
+				error(exchange, 404, "File not found: " + fileFilter);
+				return;
+			}
+		}
+
 		int searchFor = IJavaSearchConstants.REFERENCES;
 		if ("write".equals(access))
 			searchFor = IJavaSearchConstants.WRITE_ACCESSES;
@@ -227,12 +253,19 @@ public class WebJDT extends WebServer {
 		json.object();
 		json.array("references");
 		int total = 0;
+		// Dedupe by file+line so multiple references on the same line (e.g. a write + read in `x = foo.x`)
+		// collapse to one visible entry, matching how users scan results.
+		var seenFileLine = new LinkedHashSet<String>();
 		for (var match : deduped) {
 			var resource = match.getResource();
 			if (resource == null) continue;
 			String fp = filePath(resource);
 
 			if (fileFilter != null && !fileFilter.isEmpty() && !fp.contains(fileFilter)) continue;
+
+			var source = getSource(match);
+			int line = source != null ? lineNumber(source, match.getOffset()) : 0;
+			if (line > 0 && !seenFileLine.add(fp + ":" + line)) continue;
 
 			total++;
 			if (!unlimited && total > limit) continue;
@@ -245,9 +278,8 @@ public class WebJDT extends WebServer {
 			} else if (match.getElement() instanceof IMember enclosing) {
 				json.set("enclosingType", enclosing.getDeclaringType().getFullyQualifiedName());
 			}
-			var source = getSource(match);
 			if (source != null) {
-				json.set("line", lineNumber(source, match.getOffset()));
+				json.set("line", line);
 				json.set("context", contextLine(source, match.getOffset()));
 			}
 			json.pop();
@@ -255,6 +287,8 @@ public class WebJDT extends WebServer {
 		json.pop();
 		json.set("total", total);
 		if (!unlimited && total > limit) json.set("limited", true);
+		var warning = fileErrorsWarning(type);
+		if (warning != null) json.set("warning", warning);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
@@ -263,7 +297,7 @@ public class WebJDT extends WebServer {
 		var query = exchange.decodeQuery();
 		String projectName = query.get("project");
 		String typeName = query.get("type");
-		String direction = query.getOrDefault("direction", "sub");
+		String direction = query.getOrDefault("direction", "all");
 		String methodName = query.get("method");
 		String methodParamTypes = query.get("paramTypes");
 
@@ -278,12 +312,14 @@ public class WebJDT extends WebServer {
 		var hierarchy = type.newTypeHierarchy(new NullProgressMonitor());
 		IType[] types = switch (direction) {
 		case "super" -> hierarchy.getAllSupertypes(type);
-		case "all" -> hierarchy.getAllTypes();
-		default -> hierarchy.getAllSubtypes(type);
+		case "sub" -> hierarchy.getAllSubtypes(type);
+		default -> hierarchy.getAllTypes();
 		};
 
 		var json = new Json();
-		json.array();
+		json.object();
+		json.array("types");
+		int emitted = 0;
 		for (var t : types) {
 			if (t.getFullyQualifiedName().equals("java.lang.Object")) continue;
 			IMethod override = null;
@@ -292,6 +328,7 @@ public class WebJDT extends WebServer {
 				if (override == null) continue;
 			}
 
+			emitted++;
 			json.object();
 			json.set("type", t.getFullyQualifiedName());
 			var resource = t.getResource();
@@ -308,6 +345,9 @@ public class WebJDT extends WebServer {
 			}
 			json.pop();
 		}
+		json.pop();
+		var warning = fileErrorsWarning(type);
+		if (warning != null) json.set("warning", warning);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
@@ -330,7 +370,8 @@ public class WebJDT extends WebServer {
 		}
 
 		var json = new Json();
-		json.array();
+		json.object();
+		json.array("matches");
 		boolean single = types.size() == 1;
 		for (var t : types) {
 			json.object();
@@ -378,6 +419,11 @@ public class WebJDT extends WebServer {
 			json.pop();
 		}
 		json.pop();
+		if (single) {
+			var warning = fileErrorsWarning(types.get(0));
+			if (warning != null) json.set("warning", warning);
+		}
+		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
 
@@ -388,7 +434,7 @@ public class WebJDT extends WebServer {
 		// FQN exact match: direct lookup first.
 		if (typeName.contains(".") && !hasWildcards) {
 			var type = findType(projectName, typeName);
-			if (type != null && type.getResource() != null) {
+			if (type != null && !type.isBinary()) {
 				var types = new ArrayList<IType>();
 				types.add(type);
 				return types;
@@ -405,7 +451,7 @@ public class WebJDT extends WebServer {
 			new SearchRequestor() {
 				public void acceptSearchMatch (SearchMatch match) {
 					if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t)
-						if (t.getResource() != null) types.add(t); // Source types only.
+						if (!t.isBinary()) types.add(t); // Source types only; isBinary is definitive (getResource can return the jar).
 				}
 			}, new NullProgressMonitor());
 		return types;
@@ -431,10 +477,12 @@ public class WebJDT extends WebServer {
 			if (!superType.getFullyQualifiedName().equals("java.lang.Object")) allTypes.add(superType);
 
 		var json = new Json();
-		json.array();
+		json.object();
+		json.array("entries");
 		for (var t : allTypes) {
 			json.object();
 			json.set("type", t.getFullyQualifiedName());
+			if (t.isInterface()) json.set("isInterface", true);
 			var resource = t.getResource();
 			if (resource != null) json.set("file", filePath(resource));
 
@@ -486,6 +534,9 @@ public class WebJDT extends WebServer {
 			json.pop();
 			json.pop();
 		}
+		json.pop();
+		var warning = fileErrorsWarning(type);
+		if (warning != null) json.set("warning", warning);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
@@ -562,6 +613,8 @@ public class WebJDT extends WebServer {
 			}
 			json.pop();
 		}
+		var warning = fileErrorsWarning(type);
+		if (warning != null) json.set("warning", warning);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
@@ -779,10 +832,17 @@ public class WebJDT extends WebServer {
 		json.array("callers");
 		int total = 0;
 		boolean limited = false;
+		// Dedupe by file+line: a line like `foo(); foo();` produces two match offsets we collapse to one entry.
+		var seenFileLine = new LinkedHashSet<String>();
 
 		for (var match : matches) {
 			var resource = match.getResource();
 			if (resource == null) continue;
+
+			String fp = filePath(resource);
+			var source = getSource(match);
+			int line = source != null ? lineNumber(source, match.getOffset()) : 0;
+			if (line > 0 && !seenFileLine.add(fp + ":" + line)) continue;
 
 			total++;
 			if (!unlimited && total > limit) {
@@ -791,14 +851,13 @@ public class WebJDT extends WebServer {
 			}
 
 			json.object();
-			json.set("file", filePath(resource));
+			json.set("file", fp);
 			if (match.getElement() instanceof IMethod caller) {
 				json.set("enclosingType", caller.getDeclaringType().getFullyQualifiedName());
 				json.set("enclosingMethod", caller.getElementName());
 			}
-			var source = getSource(match);
 			if (source != null) {
-				json.set("line", lineNumber(source, match.getOffset()));
+				json.set("line", line);
 				json.set("context", contextLine(source, match.getOffset()));
 			}
 			json.pop();
@@ -807,6 +866,8 @@ public class WebJDT extends WebServer {
 		json.pop();
 		json.set("total", total);
 		if (limited) json.set("limited", true);
+		var warning = fileErrorsWarning(type);
+		if (warning != null) json.set("warning", warning);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
@@ -1160,7 +1221,7 @@ public class WebJDT extends WebServer {
 			new SearchRequestor() {
 				public void acceptSearchMatch (SearchMatch match) {
 					if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t)
-						if (t.getResource() != null) types.add(t); // Source types only for unqualified.
+						if (!t.isBinary()) types.add(t); // Source types only; isBinary is definitive (getResource can return the jar).
 				}
 			}, new NullProgressMonitor());
 
@@ -1271,6 +1332,20 @@ public class WebJDT extends WebServer {
 
 	void error (Exchange exchange, int code, String message) throws Exception {
 		exchange.responseJson(code, "{\"error\":" + Json.quote(message) + "}");
+	}
+
+	/** Returns a warning string if the type's file has compile errors, null otherwise. Used by every type-aware endpoint so the
+	 * user is told when results may be incomplete or stale due to broken code rather than misreading an empty/degraded result as
+	 * authoritative. */
+	String fileErrorsWarning (IType type) throws Exception {
+		if (type == null) return null;
+		var resource = type.getResource();
+		if (resource == null) return null;
+		for (var marker : resource.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_ZERO)) {
+			if (marker.getAttribute(IMarker.SEVERITY, -1) == IMarker.SEVERITY_ERROR)
+				return "File has compile errors, results may be incomplete";
+		}
+		return null;
 	}
 
 	int intParam (HashMap<String, String> query, String name, int defaultValue) {
