@@ -46,9 +46,12 @@ export default function (pi: ExtensionAPI) {
 			const output = (grepResult.stdout || "").replace(/\r/g, "").trim(); // Strip CR (Windows grep may emit \r\n).
 			if (!output) {
 				// Echo the command so the model sees exactly what ran.
-				const shown = files.length <= 3 ? files.join(" ") : files.slice(0, 3).join(" ") + ` ...(+${files.length - 3} more)`;
-				const cmd = `grep ${flagArgs.join(" ")} ${JSON.stringify(params.pattern)} ${shown}`.replace(/\s+/g, " ").trim();
+				const cmd = `grep ${flagArgs.join(" ")} ${JSON.stringify(params.pattern)}`.replace(/\s+/g, " ").trim();
 				let msg = `No matches for: ${cmd}`;
+				// List up to 3 searched files; truncate the rest with a count.
+				const MAX_FILES_SHOWN = 3;
+				for (const f of files.slice(0, MAX_FILES_SHOWN)) msg += `\n${f}`;
+				if (files.length > MAX_FILES_SHOWN) msg += `\n...+${files.length - MAX_FILES_SHOWN} more`;
 				// BRE footgun: `|` without -E/-P is a literal pipe, almost never intentional.
 				// `\|` is GNU BRE alternation, so don't warn when it's escaped.
 				// Short-option cluster like -E, -P, -nE, -iEn all contain E/P.
@@ -80,8 +83,7 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
 			if (isPartial) return new Text("\n" + yellow("Searching..."), 0, 0);
 			if (!r.details?.lines) {
-				let text = r.content[0]?.text || "No matches found.";
-				if (r.details?.files) text += "\n" + r.details.files.map((f: string) => filePath(f)).join("\n");
+				const text = r.content[0]?.text || "No matches found.";
 				return new Text("\n" + applyCollapse(text, expanded), 0, 0);
 			}
 			const lines = r.details.lines as string[];
