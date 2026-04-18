@@ -40,11 +40,39 @@ export default function (pi: ExtensionAPI) {
 			if (files.length === 0) throw new Error(`Type not found: ${params.type}`);
 
 			const flagStr = params.flags || "-n";
-			const args = flagStr.split(/\s+/).filter(Boolean);
-			args.push(params.pattern, ...files);
+			const flagArgs = flagStr.split(/\s+/).filter(Boolean);
+			const args = [...flagArgs, params.pattern, ...files];
 			const grepResult = await pi.exec("grep", args, { signal });
 			const output = (grepResult.stdout || "").replace(/\r/g, "").trim(); // Strip CR (Windows grep may emit \r\n).
-			if (!output) return result("No matches for: " + params.pattern, { files });
+			if (!output) {
+				// Echo the command so the model sees exactly what ran.
+				const shown = files.length <= 3 ? files.join(" ") : files.slice(0, 3).join(" ") + ` ...(+${files.length - 3} more)`;
+				const cmd = `grep ${flagArgs.join(" ")} ${JSON.stringify(params.pattern)} ${shown}`.replace(/\s+/g, " ").trim();
+				let msg = `No matches for: ${cmd}`;
+				// BRE footgun: `|` without -E/-P is a literal pipe, almost never intentional.
+				// `\|` is GNU BRE alternation, so don't warn when it's escaped.
+				// Short-option cluster like -E, -P, -nE, -iEn all contain E/P.
+				const hasExtended = flagArgs.some((f) =>
+					(f.startsWith("-") && !f.startsWith("--") && /[EP]/.test(f)) ||
+					f === "--extended-regexp" || f === "--perl-regexp"
+				);
+				const hasUnescapedPipe = /(^|[^\\])\|/.test(params.pattern);
+				if (!hasExtended && hasUnescapedPipe) {
+					// Probe whether -E would have helped, so the model knows which way to go next.
+					const retry = await pi.exec("grep", ["-E", ...flagArgs, params.pattern, ...files], { signal });
+					const retryOut = (retry.stdout || "").replace(/\r/g, "").trim();
+					if (retryOut) {
+						const n = retryOut.split("\n").filter((l) => l.length > 0).length;
+						msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
+					} else {
+						const err = (retry.stderr || "").replace(/\r/g, "").trim().split("\n")[0];
+						// grep exit 2 = error (bad regex), 1 = no match, 0 = match.
+						if (retry.code === 2 && err) msg += `\nWith -E: ${err.replace(/^grep:\s*/, "")}`;
+						else msg += `\nWith -E: 0 matches`;
+					}
+				}
+				return result(msg, { files });
+			}
 			const rawLines = output.split("\n").filter((l: string) => l.length > 0);
 			const cleaned = rawLines.map((l: string) => l.replace(/^(\d+):/, "$1  ")).join("\n");
 			return result(cleaned, { lines: rawLines, files });
