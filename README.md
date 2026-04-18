@@ -43,6 +43,12 @@ Some LLM APIs give literal tabs and other bad data in their JSON response, stopp
 Error: Bad control character in string literal in JSON at position 123
 ```
 
+## Completion sorting
+
+Eclipse seems to sort completions randomly. This plugin makes it smarter by tracking your most recently used types and projects. Types defined in the same file and project are preferred, and other reasonable logic. The types you are likely to choose appear higher in the list, just imagine.
+
+The Open Type dialog also has similar improvements, with slightly different rules that make sense there.
+
 ## Tabs
 
 Better tabs:
