@@ -19,7 +19,7 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Grep source files of Java types matched by name or pattern",
 		description: "Resolves type to file, then runs grep. All grep flags supported",
 		promptGuidelines: [
-			"The java_* tools are powerful and efficient, use them whenever possible",
+			"The java_* tools are aware of types, references, hierarchies. Use them over bash/grep/find for Java source",
 			"Use java_grep instead of bash grep to find text in Java source",
 		],
 		parameters: Type.Object({
@@ -43,7 +43,6 @@ export default function (pi: ExtensionAPI) {
 			const args = flagStr.split(/\s+/).filter(Boolean);
 			args.push(params.pattern, ...files);
 			const grepResult = await pi.exec("grep", args, { signal });
-			 and drop any empty lines so rendered output is clean
 			const output = (grepResult.stdout || "").replace(/\r/g, "").trim(); // Strip CR (Windows grep may emit \r\n).
 			if (!output) return result("No matches for: " + params.pattern, { files });
 			const rawLines = output.split("\n").filter((l: string) => l.length > 0);
@@ -159,61 +158,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// ---- java_method ----
-	pi.registerTool({
-		name: "java_method",
-		label: "Java Method",
-		promptSnippet: "Show the source code of a Java method",
-		description: "Returns exact method body without over/under reading plus any super calls",
-		promptGuidelines: ["Use java_method instead of read to see an entire Java method"],
-		parameters: Type.Object({
-			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
-			method: Type.String({ description: "Method name" }),
-			paramTypes: Type.Optional(Type.String({ description: "Comma-separated param types for overloaded methods" })),
-			...optionalProject(),
-		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_method") + type(params) + extra("project", params.project);
-			return new Text(text, 0, 0);
-		},
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const data = await jdt("/java_method", params, signal);
-			if (data._error) return result(data._error + ": " + typePlain(params));
-			const parts: string[] = [];
-			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
-			parts.push(data.source);
-			if (Array.isArray(data.supers)) {
-				for (const s of data.supers) {
-					parts.push("");
-					const loc = s.file ? `${relPath(s.file, ctx.cwd)}` + (s.line ? `:${s.line}` : "") + (s.endLine ? `-${s.endLine}` : "") : `${s.type}#${s.method}`;
-					parts.push(loc);
-					parts.push(s.source);
-				}
-			}
-			return result(withWarning(parts.join("\n"), data.warning), { data, cwd: ctx.cwd });
-		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Loading..."), 0, 0);
-			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Method not found."), 0, 0);
-			const { data, cwd } = r.details;
-			const renderBody = (file: string | undefined, line: number | undefined, endLine: number | undefined, src: string, fallback: string) => {
-				const header = file
-					? filePath(relPath(file, cwd)) + (line ? lineNumber(":" + line + (endLine ? "-" + endLine : "")) : "")
-					: fallback;
-				return header + "\n" + javaCode(stripIndent(src || ""));
-			};
-			const pieces: string[] = [];
-			pieces.push(renderBody(data.file, data.line, data.endLine, data.source, ""));
-			if (Array.isArray(data.supers)) {
-				for (const s of data.supers) {
-					pieces.push("");
-					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${s.type}#${s.method}`)));
-				}
-			}
-			return new Text("\n" + withWarningStyled(applyCollapse(pieces.join("\n"), expanded), data.warning), 0, 0);
-		},
-	});
-
 	// ---- java_type ----
 	pi.registerTool({
 		name: "java_type",
@@ -221,8 +165,8 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Show a Java type's source or search for types",
 		description: "If multiple types match shows the list of matches instead of the source",
 		promptGuidelines: [
-			"Use java_type instead of read to view a Java type by name. Faster than read and does not require knowing the file path",
-			"Use java_type with wildcards to find matching types. Faster than bash find",
+			"Use java_type instead of read to view a Java type by name, without needing the file path",
+			"Use java_type with wildcards instead of bash find to search for matching Java types",
 		],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
@@ -275,6 +219,61 @@ export default function (pi: ExtensionAPI) {
 			const { matches, cwd } = r.details;
 			const w = maxLineWidth(matches);
 			return new Text("\n" + applyCollapse(renderGrouped(matches, cwd, (t) => (t.line ? paddedLine(t.line, w) + "  " : "") + accent(t.type)), expanded), 0, 0);
+		},
+	});
+
+	// ---- java_method ----
+	pi.registerTool({
+		name: "java_method",
+		label: "Java Method",
+		promptSnippet: "Show the source code of a Java method",
+		description: "Returns exact method body without over/under reading plus any super calls",
+		promptGuidelines: ["Use java_method instead of read to see an entire Java method"],
+		parameters: Type.Object({
+			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
+			method: Type.String({ description: "Method name" }),
+			paramTypes: Type.Optional(Type.String({ description: "Comma-separated param types for overloaded methods" })),
+			...optionalProject(),
+		}),
+		renderCall(params, theme) { _theme = theme;
+			let text = tool("java_method") + type(params) + extra("project", params.project);
+			return new Text(text, 0, 0);
+		},
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const data = await jdt("/java_method", params, signal);
+			if (data._error) return result(data._error + ": " + typePlain(params));
+			const parts: string[] = [];
+			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
+			parts.push(data.source);
+			if (Array.isArray(data.supers)) {
+				for (const s of data.supers) {
+					parts.push("");
+					const loc = s.file ? `${relPath(s.file, ctx.cwd)}` + (s.line ? `:${s.line}` : "") + (s.endLine ? `-${s.endLine}` : "") : `${s.type}#${s.method}`;
+					parts.push(loc);
+					parts.push(s.source);
+				}
+			}
+			return result(withWarning(parts.join("\n"), data.warning), { data, cwd: ctx.cwd });
+		},
+		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
+			if (isPartial) return new Text("\n" + yellow("Loading..."), 0, 0);
+			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Method not found."), 0, 0);
+			const { data, cwd } = r.details;
+			const renderBody = (file: string | undefined, line: number | undefined, endLine: number | undefined, src: string, fallback: string) => {
+				const header = file
+					? filePath(relPath(file, cwd)) + (line ? lineNumber(":" + line + (endLine ? "-" + endLine : "")) : "")
+					: fallback;
+				return header + "\n" + javaCode(stripIndent(src || ""));
+			};
+			const pieces: string[] = [];
+			pieces.push(renderBody(data.file, data.line, data.endLine, data.source, ""));
+			if (Array.isArray(data.supers)) {
+				for (const s of data.supers) {
+					pieces.push("");
+					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${s.type}#${s.method}`)));
+				}
+			}
+			return new Text("\n" + withWarningStyled(applyCollapse(pieces.join("\n"), expanded), data.warning), 0, 0);
 		},
 	});
 
@@ -366,9 +365,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "java_references",
 		label: "Java References",
-		promptSnippet: "Show all references to a Java type, method, or field",
-		description: "Shows enclosing method name for each reference. Can filter to specific paths and field reads/writes",
-		promptGuidelines: ["Use java_references instead of bash grep to find usage of a Java type/field/method or field writes"],
+		promptSnippet: "Show usage of a Java field (read/write), method, or type",
+		description: "Shows enclosing method name for each reference. Can filter to specific paths",
+		promptGuidelines: ["Use java_references instead of bash grep to find references field reads/writes"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			member: Type.Optional(Type.String({ description: "Method or field. Omit to find references to the type" })),
@@ -537,8 +536,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "java_classpath",
 		label: "Java Classpath",
-		promptSnippet: "Classpath for Java project and all dependencies to run main classes",
-		description: "Use with bash java @file to run Java classes in a project",
+		description: "Get classpath for a Java project and all dependencies. Use with bash java @file to run a Java main class in a project",
 		parameters: Type.Object({
 			project: Type.String({ description: "Eclipse project name" }),
 		}),
