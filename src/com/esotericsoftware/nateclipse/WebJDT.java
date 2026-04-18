@@ -1,5 +1,5 @@
 
-package nateclipse;
+package com.esotericsoftware.nateclipse;
 
 import static java.nio.charset.StandardCharsets.*;
 
@@ -61,8 +61,8 @@ import org.eclipse.jdt.core.search.SearchRequestor;
 import org.eclipse.jdt.core.search.TypeNameMatch;
 import org.eclipse.jdt.launching.JavaRuntime;
 
-import nateclipse.utils.Json;
-import nateclipse.utils.WebServer;
+import com.esotericsoftware.nateclipse.utils.Json;
+import com.esotericsoftware.nateclipse.utils.WebServer;
 
 public class WebJDT extends WebServer {
 	static final int defaultLimit = 50;

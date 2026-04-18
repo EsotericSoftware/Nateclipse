@@ -4,8 +4,25 @@
    <extension
          point="org.eclipse.ui.startup">
       <startup
-            class="nateclipse.Activator">
+            class="com.esotericsoftware.nateclipse.Activator">
       </startup>
+   </extension>
+
+   <extension
+         point="org.eclipse.jdt.ui.javaCompletionProposalSorters">
+      <proposalSorter
+            id="com.esotericsoftware.nateclipse.completionSort"
+            class="com.esotericsoftware.nateclipse.CompletionSort"
+            name="Nateclipse smart sort">
+      </proposalSorter>
+   </extension>
+
+   <extension
+         point="org.eclipse.ui.handlers">
+      <handler
+            commandId="org.eclipse.jdt.ui.navigate.open.type"
+            class="com.esotericsoftware.nateclipse.OpenTypeSort">
+      </handler>
    </extension>
 
 </plugin>

@@ -1,5 +1,5 @@
 
-package nateclipse.utils;
+package com.esotericsoftware.nateclipse.utils;
 
 import static java.nio.charset.StandardCharsets.*;
 

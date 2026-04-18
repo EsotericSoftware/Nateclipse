@@ -1,5 +1,5 @@
 
-package nateclipse;
+package com.esotericsoftware.nateclipse;
 
 import java.lang.reflect.Field;
 
@@ -15,8 +15,8 @@ import org.eclipse.ui.IURIEditorInput;
 import org.eclipse.ui.IWorkbenchPart;
 import org.eclipse.ui.IWorkbenchPartReference;
 
-public class TabLabelModifier implements IPartListener2 {
-	static private final ILog log = Platform.getLog(TabLabelModifier.class);
+public class TabLabels implements IPartListener2 {
+	static private final ILog log = Platform.getLog(TabLabels.class);
 
 	@Override
 	public void partOpened (IWorkbenchPartReference partRef) {
@@ -32,7 +32,7 @@ public class TabLabelModifier implements IPartListener2 {
 	}
 
 	/** Walks all CTabFolders and forces close buttons off and minimum characters up. No title matching needed. */
-	static void fixAllTabFolders (Composite parent) {
+	static public void fixAllTabFolders (Composite parent) {
 		for (Control child : parent.getChildren()) {
 			if (child instanceof CTabFolder folder) {
 				try {
