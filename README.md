@@ -17,17 +17,15 @@ Extensions are provided for the fantastic [Pi coding agent](https://pi.dev).
 This extension makes it easy for coding agents to use the JDT API. Tools provided:
 
 * `java_grep` Grep source files of Java types matched by name or pattern.
-* `java_members` Show fields and methods of a Java type.
-* `java_method` Show the source code of a Java method, without over/under reading. Also include source for any super calls.
-* `java_find_type` Search Java types by name or wildcard pattern.
+* `java_members` Show fields and methods of a Java type and inherited members.
+* `java_type` Show a Java type's source by name or wildcard pattern. Lists results if multiple are found.
+* `java_method` Show the source code of a Java method, without over/under reading. Also includes source for super calls to reduce turns.
 * `java_organize_imports` Automatically add/remove Java imports, with conflict resolution. If there is only 1 conflict it is resolved automatically, without using an extra turn.
 * `java_errors` Report Java compilation errors and warnings. Eclipse builds in the background, so this is very fast.
 * `java_references` Show all references to a Java type, method, or field.
 * `java_hierarchy` Show subtypes/implementors, supertypes, or full class hierarchy.
 * `java_callers` Show all callers of a Java method.
 * `java_classpath` Provides the classpath for a Java project and all dependencies, so main classes can be run in the project.
-
-Also Pi's built-in `read` tool is enhanced with a `type` parameter for reading Java source by type name rather than filesystem path. By specifying a type instead of a filesystem path, coding agents don't need to find or guess at where source files are located.
 
 ### edit.ts
 
