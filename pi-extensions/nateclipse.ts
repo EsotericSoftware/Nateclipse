@@ -556,45 +556,12 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
-function result(text: string, details?: Record<string, any>) {
-	return { content: [{ type: "text" as const, text }], details: details || {} };
-}
-
-function withWarning(text: string, warning: string | undefined): string {
-	return warning ? warning + "\n" + text : text;
-}
-
-function withWarningStyled(text: string, warning: string | undefined): string {
-	return warning ? red(warning) + "\n" + text : text;
-}
-
-/** Collapses long renderResult output to 10 lines with an expand hint, matching read.ts's behavior.
- * Always prepends a newline so every renderResult main-path output has one blank line below the
- * renderCall (renderCall no longer carries a trailing newline, same convention as read.ts). */
-function applyCollapse(text: string, expanded: boolean): string {
+function applyCollapse(text: string, expanded: boolean): string { // Matches read tool behavior.
 	if (expanded) return text;
 	const lines = text.split("\n");
 	if (lines.length <= 10) return text;
 	const remaining = lines.length - 10;
 	return lines.slice(0, 10).join("\n") + _theme.fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
-}
-
-function stripIndent(text: string): string {
-	text = text.replace(/\r/g, "");
-	const nl = text.indexOf("\n");
-	if (nl < 0) return text;
-	const rest = text.slice(nl + 1);
-	const lines = rest.split("\n");
-	let min = Infinity;
-	for (const line of lines) {
-		if (line.trim().length === 0) continue;
-		let i = 0;
-		while (i < line.length && (line[i] === " " || line[i] === "\t")) i++;
-		if (i < min) min = i;
-	}
-	if (min === Infinity || min === 0) return text;
-	const stripped = lines.map(line => line.length >= min ? line.slice(min) : line).join("\n");
-	return text.slice(0, nl) + "\n" + stripped;
 }
 
 async function jdt(path: string, params: Record<string, any>, signal?: AbortSignal): Promise<any> {
@@ -618,15 +585,6 @@ async function jdt(path: string, params: Record<string, any>, signal?: AbortSign
 		throw new Error(message);
 	}
 	return response.json();
-}
-
-function relPath(absPath: string, cwd: string): string {
-	if (absPath.toLowerCase().startsWith(cwd.toLowerCase())) {
-		let rel = absPath.slice(cwd.length);
-		if (rel[0] === "/" || rel[0] === "\\") rel = rel.slice(1);
-		return rel;
-	}
-	return absPath;
 }
 
 function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string): string {
@@ -663,17 +621,6 @@ function renderGrouped(items: any[], cwd: string, formatItem: (r: any) => string
 	return parts.join("\n");
 }
 
-function maxLineWidth(items: any[]): number {
-	let max = 0;
-	for (const item of items)
-		if (item.line) max = Math.max(max, String(item.line).length);
-	return max;
-}
-
-function paddedLine(line: number | string, width: number): string {
-	return lineNumber(String(line).padStart(width));
-}
-
 function renderResult(r: any, isPartial: boolean, theme: any,
 	opts: { wait?: string; success?: string; empty?: string } = {}): Text { _theme = theme;
 	if (isPartial) return new Text("\n" + yellow(opts.wait || "Working..."), 0, 0);
@@ -700,7 +647,12 @@ function red(text: string): string {
 function accent(value: string): string {
 	return _theme.fg("accent", value);
 }
-
+function lineNumber(value: string): string {
+	return yellow(value);
+}
+function filePath(value: string): string {
+	return _theme.fg("success", value);
+}
 function tool(text: string): string {
 	return white(text + " ");
 }
@@ -736,16 +688,49 @@ function extra(...args: Array<string | number | undefined | null>): string {
 	}
 	return text;
 }
-function lineNumber(value: string): string {
-	return yellow(value);
+function withWarning(text: string, warning: string | undefined): string {
+	return warning ? warning + "\n" + text : text;
 }
-function filePath(value: string): string {
-	return _theme.fg("success", value);
+function withWarningStyled(text: string, warning: string | undefined): string {
+	return warning ? red(warning) + "\n" + text : text;
+}
+function maxLineWidth(items: any[]): number {
+	let max = 0;
+	for (const item of items)
+		if (item.line) max = Math.max(max, String(item.line).length);
+	return max;
+}
+function paddedLine(line: number | string, width: number): string {
+	return lineNumber(String(line).padStart(width));
+}
+function result(text: string, details?: Record<string, any>) {
+	return { content: [{ type: "text" as const, text }], details: details || {} };
 }
 function javaCode(code: string): string {
-	// highlightCode returns string[] (one entry per line). Join with \n so the result is a plain string
-	// whether the input is a single expression (used in signatures) or a multi-line block (used after
-	// stripIndent for method/type bodies). Strip CR first because cli-highlight normalizes CR to LF,
-	// which would produce a trailing empty entry and Array.toString commas when concatenated.
 	return highlightCode(code.replace(/\r/g, ""), "java").join("\n");
+}
+function stripIndent(text: string): string {
+	text = text.replace(/\r/g, "");
+	const nl = text.indexOf("\n");
+	if (nl < 0) return text;
+	const rest = text.slice(nl + 1);
+	const lines = rest.split("\n");
+	let min = Infinity;
+	for (const line of lines) {
+		if (line.trim().length === 0) continue;
+		let i = 0;
+		while (i < line.length && (line[i] === " " || line[i] === "\t")) i++;
+		if (i < min) min = i;
+	}
+	if (min === Infinity || min === 0) return text;
+	const stripped = lines.map(line => line.length >= min ? line.slice(min) : line).join("\n");
+	return text.slice(0, nl) + "\n" + stripped;
+}
+function relPath(absPath: string, cwd: string): string {
+	if (absPath.toLowerCase().startsWith(cwd.toLowerCase())) {
+		let rel = absPath.slice(cwd.length);
+		if (rel[0] === "/" || rel[0] === "\\") rel = rel.slice(1);
+		return rel;
+	}
+	return absPath;
 }
