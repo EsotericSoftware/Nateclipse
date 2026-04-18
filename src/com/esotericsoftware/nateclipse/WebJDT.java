@@ -190,7 +190,7 @@ public class WebJDT extends WebServer {
 
 		var element = findMember(type, memberName, paramTypes);
 		if (element == null) {
-			error(exchange, 404, "Member not found");
+			error(exchange, 404, "Type " + type.getFullyQualifiedName() + " found, doesn't have member: " + memberName);
 			return;
 		}
 
@@ -562,7 +562,7 @@ public class WebJDT extends WebServer {
 
 		var method = findMethod(type, methodName, paramTypes);
 		if (method == null) {
-			error(exchange, 404, "Method not found");
+			error(exchange, 404, "Type " + type.getFullyQualifiedName() + " found, doesn't have method: " + methodName);
 			return;
 		}
 
@@ -813,7 +813,7 @@ public class WebJDT extends WebServer {
 
 		var method = findMethod(type, methodName, paramTypes);
 		if (method == null) {
-			error(exchange, 404, "Method not found");
+			error(exchange, 404, "Type " + type.getFullyQualifiedName() + " found, doesn't have method: " + methodName);
 			return;
 		}
 
@@ -1203,11 +1203,11 @@ public class WebJDT extends WebServer {
 	IType resolveTypeOrError (Exchange exchange, String projectName, String typeName) throws Exception {
 		boolean hasWildcards = typeName.contains("*") || typeName.contains("?");
 
-		// FQN without wildcards: direct lookup.
+		// FQN without wildcards: try direct lookup first (fast path for the common case).
 		if (typeName.contains(".") && !hasWildcards) {
 			var type = findType(projectName, typeName);
-			if (type == null) error(exchange, 404, "Type not found");
-			return type;
+			if (type != null) return type;
+			// Fall through to search: handles unqualified nested references like "Outer.Inner".
 		}
 
 		// Search: exact or pattern match.
@@ -1225,9 +1225,23 @@ public class WebJDT extends WebServer {
 				}
 			}, new NullProgressMonitor());
 
+		// If the search found nothing, retry with '.' and '$' swapped so nested types work regardless
+		// of which separator the caller used ("Outer.Inner" vs "Outer$Inner").
+		if (types.isEmpty() && !hasWildcards && (typeName.indexOf('.') >= 0 || typeName.indexOf('$') >= 0)) {
+			String swapped = typeName.indexOf('$') >= 0 ? typeName.replace('$', '.') : typeName.replace('.', '$');
+			var alt = SearchPattern.createPattern(swapped, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS, matchRule);
+			new SearchEngine().search(alt, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
+				new SearchRequestor() {
+					public void acceptSearchMatch (SearchMatch match) {
+						if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t)
+							if (!t.isBinary()) types.add(t);
+					}
+				}, new NullProgressMonitor());
+		}
+
 		if (types.size() == 1) return types.get(0);
 		if (types.isEmpty()) {
-			error(exchange, 404, "Type not found");
+			error(exchange, 404, "Type not found: " + typeName);
 			return null;
 		}
 
@@ -1242,6 +1256,27 @@ public class WebJDT extends WebServer {
 	}
 
 	IType findType (String projectName, String qualifiedName) throws JavaModelException {
+		// Try as-is first; exact match always wins.
+		var type = findTypeExact(projectName, qualifiedName);
+		if (type != null) return type;
+
+		// Fallback: replace '.' with '$' from the right to handle nested types written with dot notation
+		// (e.g. "Outer.Inner" -> "Outer$Inner"). Only succeeds if exactly one candidate resolves.
+		if (qualifiedName.indexOf('.') >= 0) {
+			var matches = new LinkedHashMap<String, IType>();
+			var sb = new StringBuilder(qualifiedName);
+			for (int i = sb.length() - 1; i >= 0; i--) {
+				if (sb.charAt(i) != '.') continue;
+				sb.setCharAt(i, '$');
+				var candidate = findTypeExact(projectName, sb.toString());
+				if (candidate != null) matches.putIfAbsent(candidate.getFullyQualifiedName(), candidate);
+			}
+			if (matches.size() == 1) return matches.values().iterator().next();
+		}
+		return null;
+	}
+
+	IType findTypeExact (String projectName, String qualifiedName) throws JavaModelException {
 		var root = ResourcesPlugin.getWorkspace().getRoot();
 		if (projectName != null && !projectName.isEmpty()) {
 			var project = root.getProject(projectName);
@@ -1249,8 +1284,8 @@ public class WebJDT extends WebServer {
 			return JavaCore.create(project).findType(qualifiedName);
 		}
 		for (var jp : JavaCore.create(root).getJavaProjects()) {
-			var type = jp.findType(qualifiedName);
-			if (type != null) return type;
+			var t = jp.findType(qualifiedName);
+			if (t != null) return t;
 		}
 		return null;
 	}

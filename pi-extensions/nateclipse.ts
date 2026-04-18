@@ -241,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
-			if (data._error) return result(data._error + ": " + typePlain(params));
+			if (data._error) return result(data._error);
 			const parts: string[] = [];
 			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
 			parts.push(data.source);
@@ -384,10 +384,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_references", params, signal);
-			if (data._error) {
-				const msg = data._error.startsWith("File not found") ? data._error : data._error + ": " + typePlain(params);
-				return result(msg);
-			}
+			if (data._error) return result(data._error);
 			if (data.total === 0) {
 				const msg = data.warning || "No references for: " + typePlain(params);
 				return result(msg, { data });
@@ -446,7 +443,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_hierarchy", params, signal);
-			if (data._error) return result(data._error + ": " + typePlain(params));
+			if (data._error) return result(data._error);
 			const types = data.types || [];
 			if (types.length === 0) {
 				const msg = data.warning || "No types in hierarchy for: " + typePlain(params);
@@ -496,7 +493,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_callers", params, signal);
-			if (data._error) return result(data._error + ": " + typePlain(params));
+			if (data._error) return result(data._error);
 			if (data.total === 0) {
 				const msg = data.warning || "No callers for: " + typePlain(params);
 				return result(msg, { data });
