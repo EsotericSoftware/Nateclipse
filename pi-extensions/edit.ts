@@ -88,21 +88,27 @@ function renderLocation(lines: string[], startLine: number, before: number, afte
 	return `#${index + 1} at line ${startLine}:\n${snippet}`;
 }
 
+/** Read file and normalize CRLF to LF so terminal rendering isn't corrupted by trailing \r. */
+async function readFileNormalized(cwd: string, filePath: string): Promise<string> {
+	// pi-coding-agent uses a leading "@" to mark file refs; strip it for fs access.
+	if (filePath.startsWith("@")) filePath = filePath.slice(1);
+	const raw = await readFile(resolve(cwd, filePath), "utf-8");
+	return raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 async function enrichDuplicateError(text: string, params: EditParams, cwd: string): Promise<string> {
 	try {
-		// pi-coding-agent uses a leading "@" to mark file refs; strip it for fs access.
-		let filePath = params.path ?? "";
-		if (filePath.startsWith("@")) filePath = filePath.slice(1);
-
-		const content = await readFile(resolve(cwd, filePath), "utf-8");
+		const content = await readFileNormalized(cwd, params.path ?? "");
 		const lines = content.split("\n");
 
 		// Find all edits whose oldText appears more than once, keeping the match positions.
 		const dupes: { oldText: string; startLines: number[] }[] = [];
 		for (const edit of params.edits ?? []) {
 			if (!edit?.oldText) continue;
-			const startLines = findLineNumbers(content, edit.oldText);
-			if (startLines.length > 1) dupes.push({ oldText: edit.oldText, startLines });
+			// Normalize oldText so CRLF from the model matches the normalized content.
+			const oldText = edit.oldText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+			const startLines = findLineNumbers(content, oldText);
+			if (startLines.length > 1) dupes.push({ oldText, startLines });
 		}
 		if (!dupes.length) return text;
 
@@ -195,17 +201,17 @@ function fuzzyFind(fileContent: string, oldText: string): { origStart: number; o
 
 async function enrichNotFoundError(text: string, params: EditParams, cwd: string): Promise<string> {
 	try {
-		let filePath = params.path ?? "";
-		if (filePath.startsWith("@")) filePath = filePath.slice(1);
-		const content = await readFile(resolve(cwd, filePath), "utf-8");
+		const content = await readFileNormalized(cwd, params.path ?? "");
 
 		const sections: string[] = [];
 		for (const edit of params.edits ?? []) {
 			if (!edit?.oldText) continue;
+			// Also normalize oldText CRLF so we match against the normalized content.
+			const oldText = edit.oldText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 			// Skip edits that exist exactly (only enriching the ones that failed).
-			if (content.includes(edit.oldText)) continue;
+			if (content.includes(oldText)) continue;
 
-			const match = fuzzyFind(content, edit.oldText);
+			const match = fuzzyFind(content, oldText);
 			if (!match || match.score < 0.3) continue;
 
 			// Extract the matched region with line numbers.
