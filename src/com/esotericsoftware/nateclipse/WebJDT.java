@@ -603,6 +603,7 @@ public class WebJDT extends WebServer {
 			json.array("supers");
 			for (var info : supers) {
 				json.object();
+				if (info.kind != null) json.set("kind", info.kind);
 				json.set("type", info.typeName);
 				json.set("method", info.methodName);
 				if (info.file != null) json.set("file", info.file);
@@ -642,13 +643,17 @@ public class WebJDT extends WebServer {
 		var binding = methodDecl.resolveBinding();
 
 		var seen = new LinkedHashMap<String, IMethodBinding>();
+		var kinds = new HashMap<String, String>();
 
 		// Directly overridden method (not applicable to constructors).
 		if (binding != null && !binding.isConstructor()) {
 			var overridden = findOverriddenMethod(binding);
 			if (overridden != null) {
 				var key = overridden.getKey();
-				if (key != null) seen.putIfAbsent(key, overridden);
+				if (key != null) {
+					seen.putIfAbsent(key, overridden);
+					kinds.putIfAbsent(key, "overrides");
+				}
 			}
 		}
 
@@ -659,7 +664,10 @@ public class WebJDT extends WebServer {
 				if (b != null) {
 					b = b.getMethodDeclaration();
 					var key = b.getKey();
-					if (key != null) seen.putIfAbsent(key, b);
+					if (key != null) {
+						seen.putIfAbsent(key, b);
+						kinds.putIfAbsent(key, "super");
+					}
 				}
 				return true;
 			}
@@ -669,7 +677,10 @@ public class WebJDT extends WebServer {
 				if (b != null) {
 					b = b.getMethodDeclaration();
 					var key = b.getKey();
-					if (key != null) seen.putIfAbsent(key, b);
+					if (key != null) {
+						seen.putIfAbsent(key, b);
+						kinds.putIfAbsent(key, "super");
+					}
 				}
 				return true;
 			}
@@ -691,9 +702,12 @@ public class WebJDT extends WebServer {
 			}
 		});
 
-		for (var b : seen.values()) {
-			var info = buildSuperInfo(b);
-			if (info != null) results.add(info);
+		for (var entry : seen.entrySet()) {
+			var info = buildSuperInfo(entry.getValue());
+			if (info != null) {
+				info.kind = kinds.getOrDefault(entry.getKey(), "super");
+				results.add(info);
+			}
 		}
 		return results;
 	}
@@ -1394,6 +1408,7 @@ public class WebJDT extends WebServer {
 	}
 
 	static class SuperMethodInfo {
+		String kind; // "overrides" or "super"
 		String typeName;
 		String methodName;
 		String file;

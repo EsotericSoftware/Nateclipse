@@ -276,8 +276,9 @@ export default function (pi: ExtensionAPI) {
 			if (Array.isArray(data.supers)) {
 				for (const s of data.supers) {
 					parts.push("");
-					const loc = s.file ? `${relPath(s.file, ctx.cwd)}` + (s.line ? `:${s.line}` : "") + (s.endLine ? `-${s.endLine}` : "") : `${s.type}#${s.method}`;
-					parts.push(loc);
+					const label = s.kind === "super" ? "Super" : "Overrides";
+					parts.push(`${label}: ${s.type}`);
+					if (s.file) parts.push(`${relPath(s.file, ctx.cwd)}` + (s.line ? `:${s.line}` : "") + (s.endLine ? `-${s.endLine}` : ""));
 					parts.push(s.source);
 				}
 			}
@@ -287,18 +288,18 @@ export default function (pi: ExtensionAPI) {
 			if (isPartial) return new Text("\n" + yellow("Loading..."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Method not found."), 0, 0);
 			const { data, cwd } = r.details;
-			const renderBody = (file: string | undefined, line: number | undefined, endLine: number | undefined, src: string, fallback: string) => {
-				const header = file
-					? filePath(relPath(file, cwd)) + (line ? lineNumber(":" + line + (endLine ? "-" + endLine : "")) : "")
-					: fallback;
-				return header + "\n" + javaCode(stripIndent(src || ""));
+			const renderBody = (file: string | undefined, line: number | undefined, endLine: number | undefined, src: string, prefix: string) => {
+				const loc = file ? filePath(relPath(file, cwd)) + (line ? lineNumber(":" + line + (endLine ? "-" + endLine : "")) : "") : "";
+				const header = prefix ? (loc ? prefix + "\n" + loc : prefix) : loc;
+				return (header ? header + "\n" : "") + javaCode(stripIndent(src || ""));
 			};
 			const pieces: string[] = [];
 			pieces.push(renderBody(data.file, data.line, data.endLine, data.source, ""));
 			if (Array.isArray(data.supers)) {
 				for (const s of data.supers) {
 					pieces.push("");
-					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${s.type}#${s.method}`)));
+					const label = s.kind === "super" ? "Super" : "Overrides";
+					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${label}: ${s.type}`)));
 				}
 			}
 			return new Text("\n" + withWarningStyled(applyCollapse(pieces.join("\n"), expanded), data.warning), 0, 0);
