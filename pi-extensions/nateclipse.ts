@@ -17,7 +17,7 @@ export default function (pi: ExtensionAPI) {
 		name: "java_grep",
 		label: "Java Grep",
 		promptSnippet: "Grep source files of Java types matched by name or pattern",
-		description: "Resolves type to file, then runs grep. All grep flags supported",
+		description: "Resolves type to file, then runs grep. All grep flags supported. Specify -E if using |",
 		promptGuidelines: [
 			"The java_* tools are aware of types, references, hierarchies. Use them over bash/grep/find for Java source",
 			"Use java_grep instead of bash grep to find text in Java source",
