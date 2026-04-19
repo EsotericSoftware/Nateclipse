@@ -5,9 +5,11 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 
 const PORT = 9001;
-const projectParams = false;
-function optionalProject() { return projectParams ? { project: Type.Optional(Type.String({ description: "Eclipse project name" })) } : {}; }
 const BASE = `http://localhost:${PORT}`;
+const PROJECT_PARAMS = false; // Clanker narrows tool usage too often.
+const CAP_GREP = 300;
+const CAP_TYPE = 200;
+const CAP_ORGANIZE_IMPORTS = 100;
 
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
@@ -33,11 +35,17 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
+			rejectBareWildcard("java_grep", params.type, "Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
 			const typeData = await jdt("/java_type", { type: params.type, project: params.project }, signal);
 			if (typeData._error) throw new Error(`Type not found: ${params.type}`);
 			const matches = typeData.matches || [];
 			const files = [...new Set(matches.filter((t: any) => t.file).map((t: any) => t.file as string))];
 			if (files.length === 0) throw new Error(`Type not found: ${params.type}`);
+			if (files.length > CAP_GREP) {
+				throw tooManyError(params.type, files.length, CAP_GREP, "files",
+					matches.map((m: any) => m.type),
+					"Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
+			}
 
 			const flagStr = params.flags || "-n";
 			const flagArgs = flagStr.split(/\s+/).filter(Boolean);
@@ -209,10 +217,15 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
+			rejectBareWildcard("java_type", params.type, "Narrow the pattern");
 			const data = await jdt("/java_type", params, signal);
 			if (data._error) throw new Error(data._error);
 			const matches = data.matches || [];
 			if (matches.length === 0) throw new Error("No matching types for: " + params.type);
+			if (matches.length > CAP_TYPE) {
+				throw tooManyError(params.type, matches.length, CAP_TYPE, "types",
+					matches.map((m: any) => m.type), "Narrow the pattern");
+			}
 			if (matches.length === 1 && matches[0].source != null) {
 				const m = matches[0];
 				const path = relPath(m.file, ctx.cwd);
@@ -328,6 +341,20 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if (!params.type && !params.file) throw new Error("Missing parameter: file or type");
+			if (params.type) {
+				rejectBareWildcard("java_organize_imports", params.type, "Narrow the pattern or target specific files, this tool writes to every match");
+				// Pre-resolve to enforce the write-scope cap before the server mutates anything.
+				const typeData = await jdt("/java_type", { type: params.type }, signal);
+				if (typeData._error) throw new Error(`Type not found: ${params.type}`);
+				const typeMatches = typeData.matches || [];
+				const typeFiles = [...new Set(typeMatches.filter((t: any) => t.file).map((t: any) => t.file as string))];
+				if (typeFiles.length === 0) throw new Error(`Type not found: ${params.type}`);
+				if (typeFiles.length > CAP_ORGANIZE_IMPORTS) {
+					throw tooManyError(params.type, typeFiles.length, CAP_ORGANIZE_IMPORTS, "files",
+						typeMatches.map((m: any) => m.type),
+						"Narrow the pattern or target specific files, this tool writes to every match");
+				}
+			}
 			const path = require("node:path");
 			const serverParams: any = { ...params };
 			if (!params.type) serverParams.file = path.resolve(ctx.cwd, params.file);
@@ -680,6 +707,18 @@ function renderResult(r: any, isPartial: boolean, theme: any,
 	return new Text("\n" + text, 0, 0);
 }
 
+function rejectBareWildcard(toolName: string, pattern: string | undefined, advice: string): void {
+	const n = (pattern || "").trim();
+	if (n !== "*" && n !== "**") return;
+	throw new Error(`Pattern "${pattern}" is not allowed for ${toolName}\n${advice}`);
+}
+
+function tooManyError(pattern: string, count: number, max: number, unit: string, samples: string[], advice: string): Error {
+	const shown = samples.slice(0, 3).map((s) => `${s}`).join("\n");
+	const more = count > 3 ? `\n...+${count - 3} more` : "";
+	return new Error(`Too many matches for "${pattern}": ${count} ${unit}, max ${max}\n${shown}${more}\n${advice}`);
+}
+
 let _theme: any;
 
 function white(text: string): string {
@@ -783,4 +822,7 @@ function relPath(absPath: string, cwd: string): string {
 		return rel;
 	}
 	return absPath;
+}
+function optionalProject() {
+	return PROJECT_PARAMS ? { project: Type.Optional(Type.String({ description: "Eclipse project name" })) } : {};
 }
