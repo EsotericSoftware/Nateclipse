@@ -131,15 +131,11 @@ export default function (pi: ExtensionAPI) {
 			const parts: string[] = [];
 			for (let i = 0; i < entries.length; i++) {
 				const entry = entries[i];
-				if (i === 0 && entry.file) {
-					parts.push(relPath(entry.file, ctx.cwd));
-				} else if (i > 0) {
-					parts.push("");
-					const label = entry.isInterface ? "Implements" : "Extends";
-					let header = `${label} ${entry.type}`;
-					if (entry.file) header += `  ${relPath(entry.file, ctx.cwd)}`;
-					parts.push(header);
-				}
+				if (i > 0) parts.push("");
+				const label = i === 0 ? "" : (entry.isInterface ? "Implements " : "Extends ");
+				let header = `${label}${entry.type}`;
+				if (entry.file) header += `  ${relPath(entry.file, ctx.cwd)}`;
+				parts.push(header);
 				if (entry.fields?.length) {
 					parts.push("Fields");
 					for (const f of entry.fields) {
@@ -174,14 +170,11 @@ export default function (pi: ExtensionAPI) {
 			const parts: string[] = [];
 			for (let i = 0; i < entries.length; i++) {
 				const e = entries[i];
-				if (i === 0 && e.file) parts.push(filePath(relPath(e.file, cwd)));
-				else if (i > 0) {
-					parts.push("");
-					const label = e.isInterface ? "Implements" : "Extends";
-					let h = accent(`${label} ${e.type}`);
-					if (e.file) h += "\n" + filePath(relPath(e.file, cwd));
-					parts.push(h);
-				}
+				if (i > 0) parts.push("");
+				const label = i === 0 ? "" : (e.isInterface ? "Implements " : "Extends ");
+				let h = accent(`${label}${e.type}`);
+				if (e.file) h += "  " + filePath(relPath(e.file, cwd));
+				parts.push(h);
 				if (e.fields?.length) {
 					parts.push(accent("Fields"));
 					for (const f of e.fields)
@@ -286,15 +279,16 @@ export default function (pi: ExtensionAPI) {
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
 			if (data._error) throw new Error(data._error);
+			const locPlain = (file: string | undefined, line: number | undefined, endLine: number | undefined) =>
+				file ? `  ${relPath(file, ctx.cwd)}` + (line ? `:${line}` : "") + (endLine ? `-${endLine}` : "") : "";
 			const parts: string[] = [];
-			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
+			parts.push(`${data.type}#${data.method}` + locPlain(data.file, data.line, data.endLine));
 			parts.push(data.source);
 			if (Array.isArray(data.supers)) {
 				for (const s of data.supers) {
 					parts.push("");
 					const label = s.kind === "super" ? "Super" : "Overrides";
-					parts.push(`${label}: ${s.type}`);
-					if (s.file) parts.push(`${relPath(s.file, ctx.cwd)}` + (s.line ? `:${s.line}` : "") + (s.endLine ? `-${s.endLine}` : ""));
+					parts.push(`${label}: ${s.type}#${s.method}` + locPlain(s.file, s.line, s.endLine));
 					parts.push(s.source);
 				}
 			}
@@ -306,16 +300,16 @@ export default function (pi: ExtensionAPI) {
 			const { data, cwd } = r.details;
 			const renderBody = (file: string | undefined, line: number | undefined, endLine: number | undefined, src: string, prefix: string) => {
 				const loc = file ? filePath(relPath(file, cwd)) + (line ? lineNumber(":" + line + (endLine ? "-" + endLine : "")) : "") : "";
-				const header = prefix ? (loc ? prefix + "\n" + loc : prefix) : loc;
+				const header = prefix ? (loc ? prefix + "  " + loc : prefix) : loc;
 				return (header ? header + "\n" : "") + javaCode(stripIndent(src || ""));
 			};
 			const pieces: string[] = [];
-			pieces.push(renderBody(data.file, data.line, data.endLine, data.source, ""));
+			pieces.push(renderBody(data.file, data.line, data.endLine, data.source, accent(data.type) + white("#") + data.method));
 			if (Array.isArray(data.supers)) {
 				for (const s of data.supers) {
 					pieces.push("");
 					const label = s.kind === "super" ? "Super" : "Overrides";
-					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${label}: ${s.type}`)));
+					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${label}: ${s.type}`) + white("#") + s.method));
 				}
 			}
 			return new Text("\n" + withWarningStyled(applyCollapse(pieces.join("\n"), expanded), data.warning), 0, 0);
@@ -399,7 +393,7 @@ export default function (pi: ExtensionAPI) {
 			if (data._error) throw new Error(data._error);
 			if (data.total === 0) return result("None");
 			const text = groupByFile(data.errors, ctx.cwd, (e) => {
-				let s = ` :${e.line}  ${e.severity}: ${e.message}`;
+				let s = `${e.line}  ${e.severity}: ${e.message}`;
 				if (e.context) s += `\n${e.context}`;
 				return s;
 			});
@@ -412,9 +406,10 @@ export default function (pi: ExtensionAPI) {
 			if (text === "None") return new Text("\n" + green("No errors."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + text, 0, 0);
 			const { data, cwd } = r.details;
+			const w = maxLineWidth(data.errors);
 			const grouped = renderGrouped(data.errors, cwd, (e) => {
 				const severity = e.severity == "error" ? "Error" : "Warning";
-				return lineNumber(e.line) + "  " + red(`${severity}: ${e.message}`) + (e.context ? `\n${stripIndent(e.context)}` : "")
+				return paddedLine(e.line, w) + "  " + red(`${severity}: ${e.message}`) + (e.context ? `\n${stripIndent(e.context)}` : "")
 			}, data.limited ? `Showing ${data.errors.length} of ${data.total}.` : undefined);
 			return new Text("\n" + applyCollapse(grouped, expanded), 0, 0);
 		},
@@ -605,9 +600,10 @@ export default function (pi: ExtensionAPI) {
 			if (data._error) throw new Error(data._error + ": " + params.project);
 			return result(data.file, { data });
 		},
-		renderResult(r, { isPartial }, theme) {
+		renderResult(r, { isPartial }, theme) { _theme = theme;
+			if (isPartial) return new Text("\n" + yellow("Working..."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Project not found."), 0, 0);
-			return renderResult(r, isPartial, theme);
+			return new Text("\n" + filePath(r.details.data.file), 0, 0);
 		},
 	});
 }
@@ -696,15 +692,6 @@ function renderGrouped(items: any[], cwd: string, formatItem: (r: any) => string
 	}
 	if (limitMsg) parts.push(_theme.fg("dim", limitMsg));
 	return parts.join("\n");
-}
-
-function renderResult(r: any, isPartial: boolean, theme: any,
-	opts: { wait?: string; success?: string; empty?: string } = {}): Text { _theme = theme;
-	if (isPartial) return new Text("\n" + yellow(opts.wait || "Working..."), 0, 0);
-	const text = r.content[0]?.text || "";
-	if (opts.success && text === opts.success) return new Text("\n" + green(text), 0, 0);
-	if (opts.empty && text === opts.empty) return new Text("\n" + red(text), 0, 0);
-	return new Text("\n" + text, 0, 0);
 }
 
 function rejectBareWildcard(toolName: string, pattern: string | undefined, advice: string): void {
