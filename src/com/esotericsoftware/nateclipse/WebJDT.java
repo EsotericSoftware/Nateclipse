@@ -1260,9 +1260,9 @@ public class WebJDT extends WebServer {
 		}
 
 		// Multiple matches: list FQNs.
-		var sb = new StringBuilder("Ambiguous, use fully qualified name: ");
+		var sb = new StringBuilder("Ambiguous, use fully qualified name:\n");
 		for (int i = 0; i < types.size(); i++) {
-			if (i > 0) sb.append(", ");
+			if (i > 0) sb.append("\n");
 			sb.append(types.get(i).getFullyQualifiedName());
 		}
 		error(exchange, 400, sb.toString());
