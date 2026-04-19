@@ -74,7 +74,7 @@ export default function (pi: ExtensionAPI) {
 						else msg += `\nWith -E: 0 matches`;
 					}
 				}
-				return result(msg, { files });
+				throw new Error(msg);
 			}
 			const rawLines = output.split("\n").filter((l: string) => l.length > 0);
 			const cleaned = rawLines.map((l: string) => l.replace(/^(\d+):/, "$1  ")).join("\n");
@@ -113,11 +113,11 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_members", params, signal);
-			if (data._error) return result(data._error + ": " + params.type);
+			if (data._error) throw new Error(data._error + ": " + params.type);
 			const entries = data.entries || [];
 			if (!entries.length) {
 				const msg = data.warning || "Type has no members: " + params.type;
-				return result(msg, { data });
+				throw new Error(msg);
 			}
 			const parts: string[] = [];
 			for (let i = 0; i < entries.length; i++) {
@@ -209,9 +209,9 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_type", params, signal);
-			if (data._error) return result(data._error);
+			if (data._error) throw new Error(data._error);
 			const matches = data.matches || [];
-			if (matches.length === 0) return result("No matching types for: " + params.type);
+			if (matches.length === 0) throw new Error("No matching types for: " + params.type);
 			if (matches.length === 1 && matches[0].source != null) {
 				const m = matches[0];
 				const path = relPath(m.file, ctx.cwd);
@@ -271,7 +271,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
-			if (data._error) return result(data._error);
+			if (data._error) throw new Error(data._error);
 			const parts: string[] = [];
 			if (data.file) parts.push(`${relPath(data.file, ctx.cwd)}` + (data.line ? `:${data.line}` : "") + (data.endLine ? `-${data.endLine}` : ""));
 			parts.push(data.source);
@@ -331,7 +331,7 @@ export default function (pi: ExtensionAPI) {
 			const serverParams: any = { ...params };
 			if (!params.type) serverParams.file = path.resolve(ctx.cwd, params.file);
 			const data = await jdt("/java_organize_imports", serverParams, signal);
-			if (data._error) return result(data._error + ": " + (params.type || params.file));
+			if (data._error) throw new Error(data._error + ": " + (params.type || params.file));
 			if (data.organized) return result("Success");
 			const lines = ["Ambiguous imports, call again with resolve parameter:"];
 			for (const c of data.conflicts)
@@ -368,7 +368,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_errors", params, signal);
-			if (data._error) return result(data._error);
+			if (data._error) throw new Error(data._error);
 			if (data.total === 0) return result("None");
 			const text = groupByFile(data.errors, ctx.cwd, (e) => {
 				let s = ` :${e.line}  ${e.severity}: ${e.message}`;
@@ -415,10 +415,10 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_references", params, signal);
-			if (data._error) return result(data._error);
+			if (data._error) throw new Error(data._error);
 			if (data.total === 0) {
 				const msg = data.warning || "No references for: " + typePlain(params);
-				return result(msg, { data });
+				throw new Error(msg);
 			}
 			const text = groupByFile(data.references, ctx.cwd, (r) => {
 				let s = `${r.line}`;
@@ -474,11 +474,11 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_hierarchy", params, signal);
-			if (data._error) return result(data._error);
+			if (data._error) throw new Error(data._error);
 			const types = data.types || [];
 			if (types.length === 0) {
 				const msg = data.warning || "No types in hierarchy for: " + typePlain(params);
-				return result(msg, { data });
+				throw new Error(msg);
 			}
 			const lines = types.map((t: any) => {
 				let s = t.type;
@@ -524,10 +524,10 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_callers", params, signal);
-			if (data._error) return result(data._error);
+			if (data._error) throw new Error(data._error);
 			if (data.total === 0) {
 				const msg = data.warning || "No callers for: " + typePlain(params);
-				return result(msg, { data });
+				throw new Error(msg);
 			}
 			const text = groupByFile(data.callers, ctx.cwd, (r) => {
 				let s = `${r.line}`;
@@ -574,7 +574,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal) {
 			const data = await jdt("/java_classpath", params, signal);
-			if (data._error) return result(data._error + ": " + params.project);
+			if (data._error) throw new Error(data._error + ": " + params.project);
 			return result(data.file, { data });
 		},
 		renderResult(r, { isPartial }, theme) {
