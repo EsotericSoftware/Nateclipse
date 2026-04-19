@@ -41,7 +41,8 @@ export default function (pi: ExtensionAPI) {
 
 			const flagStr = params.flags || "-n";
 			const flagArgs = flagStr.split(/\s+/).filter(Boolean);
-			const args = [...flagArgs, params.pattern, ...files];
+			// -H forces filename prefix so output is uniformly "file:line:content" (overrides any -h user passed; last wins in GNU grep).
+			const args = [...flagArgs, "-H", params.pattern, ...files];
 			const grepResult = await pi.exec("grep", args, { signal });
 			const output = (grepResult.stdout || "").replace(/\r/g, "").trim(); // Strip CR (Windows grep may emit \r\n).
 			if (!output) {
@@ -76,23 +77,23 @@ export default function (pi: ExtensionAPI) {
 				}
 				throw new Error(msg);
 			}
-			const rawLines = output.split("\n").filter((l: string) => l.length > 0);
-			const cleaned = rawLines.map((l: string) => l.replace(/^(\d+):/, "$1  ")).join("\n");
-			return result(cleaned, { lines: rawLines, files });
+			// Parse grep output. Match lines are "file:line:content", context lines (from -A/-B/-C) are "file-line-content", "--" separates groups.
+			const rows: Array<{ file: string; line: number; content: string }> = [];
+			for (const l of output.split("\n")) {
+				if (!l || l === "--") continue;
+				const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
+				if (!m) continue;
+				rows.push({ file: m[1], line: parseInt(m[3]), content: m[4] });
+			}
+			return result(formatGrep(rows, ctx.cwd, false), { rows, cwd: ctx.cwd });
 		},
 		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
 			if (isPartial) return new Text("\n" + yellow("Searching..."), 0, 0);
-			if (!r.details?.lines) {
+			if (!r.details?.rows) {
 				const text = r.content[0]?.text || "No matches found.";
 				return new Text("\n" + applyCollapse(text, expanded), 0, 0);
 			}
-			const lines = r.details.lines as string[];
-			let w = 0;
-			for (const l of lines) { const m = l.match(/^(\d+):/); if (m) w = Math.max(w, m[1].length); }
-			const text = lines.map((l: string) =>
-				l.replace(/^(\d+):/, (_: string, n: string) => paddedLine(n, w) + "  ")
-			).join("\n");
-			return new Text("\n" + applyCollapse(text, expanded), 0, 0);
+			return new Text("\n" + applyCollapse(formatGrep(r.details.rows, r.details.cwd, true), expanded), 0, 0);
 		},
 	});
 
@@ -613,6 +614,27 @@ async function jdt(path: string, params: Record<string, any>, signal?: AbortSign
 		throw new Error(message);
 	}
 	return response.json();
+}
+
+function formatGrep(rows: Array<{ file: string; line: number; content: string }>, cwd: string, styled: boolean): string {
+	const byFile = new Map<string, Array<{ line: number; content: string }>>();
+	for (const r of rows) {
+		if (!byFile.has(r.file)) byFile.set(r.file, []);
+		byFile.get(r.file)!.push({ line: r.line, content: r.content });
+	}
+	let w = 0;
+	for (const r of rows) w = Math.max(w, String(r.line).length);
+	const parts: string[] = [];
+	for (const [file, fileRows] of byFile) {
+		const rel = relPath(file, cwd);
+		parts.push(styled ? filePath(rel) : rel);
+		for (const r of fileRows) {
+			const num = styled ? paddedLine(r.line, w) : String(r.line).padStart(w);
+			const body = styled ? javaCode(r.content) : r.content;
+			parts.push(num + "  " + body);
+		}
+	}
+	return parts.join("\n");
 }
 
 function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string): string {
