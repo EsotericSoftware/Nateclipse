@@ -19,13 +19,15 @@ import org.eclipse.jdt.ui.text.java.AbstractProposalSorter;
 import org.eclipse.jdt.ui.text.java.ContentAssistInvocationContext;
 import org.eclipse.jdt.ui.text.java.JavaContentAssistInvocationContext;
 import org.eclipse.jface.text.contentassist.ICompletionProposal;
+import org.eclipse.jface.text.templates.TemplateProposal;
 
 import com.esotericsoftware.nateclipse.utils.TypeRanking;
 import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
 
 /** Re-orders Java content-assist proposals so that:
  * <ol>
- * <li>Types declared in the current compilation unit come first.
+ * <li>Templates (eg {@code sout} -> {@code System.out.println()}) come first.
+ * <li>Types declared in the current compilation unit come next.
  * <li>Then types in the same package, same project, other workspace projects.
  * <li>Then workspace JARs.
  * <li>Then commonly-used JDK types, then the rest of the JDK.
@@ -114,6 +116,13 @@ public class CompletionSort extends AbstractProposalSorter {
 
 	@Override
 	public int compare (ICompletionProposal p1, ICompletionProposal p2) {
+		// Templates (eg "sout" -> "System.out.println()") always come first.
+		boolean t1 = isTemplate(p1);
+		boolean t2 = isTemplate(p2);
+		if (t1 && !t2) return -1;
+		if (t2 && !t1) return 1;
+		if (t1 && t2) return compareByRelevance(p1, p2);
+
 		Integer s1 = scoreOrNull(p1);
 		Integer s2 = scoreOrNull(p2);
 
@@ -184,6 +193,14 @@ public class CompletionSort extends AbstractProposalSorter {
 		String d1 = safeDisplay(p1);
 		String d2 = safeDisplay(p2);
 		return d1.compareToIgnoreCase(d2);
+	}
+
+	static private boolean isTemplate (ICompletionProposal p) {
+		if (p == null) return false;
+		if (p instanceof TemplateProposal) return true;
+		// Fallback: some template proposals may not extend jface's TemplateProposal directly.
+		String cn = p.getClass().getName();
+		return cn.endsWith("TemplateProposal") || cn.contains(".template.");
 	}
 
 	static private int relevance (ICompletionProposal p) {
