@@ -4,9 +4,9 @@ This Eclipse plugin improves your Java coding experience.
 
 ## JDT API
 
-An Eclipse plugin exposes JDT functionality over HTTP so coding agents can use it.
+An Eclipse plugin exposes JDT functionality over HTTP so coding agents (or other tools) can use it.
 
-Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, and quickly check compilation succeeds, without wasting tokens on `grep`. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
+Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, check compilation succeeds, and more, without wasting tokens on `grep`. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
 
 ## Pi extensions
 
@@ -14,9 +14,11 @@ Extensions are provided for the fantastic [Pi coding agent](https://pi.dev).
 
 ### nateclipse.ts
 
-This extension makes it easy for coding agents to use the JDT API. Tools provided:
+This extension gives coding agents access to the JDT API. Semantic understanding of Java source makes code spelunking efficient. Tools reference types by name or wildcard rather than file path, so agents don't waste tokens guessing at source locations across many projects.
 
-* `java_grep` Grep source files of Java types matched by name or pattern.
+Tools provided:
+
+* `java_grep` Grep source files of Java types matched by name or pattern. and results show the enclosing method/type.
 * `java_members` Show fields and methods of a Java type and inherited members.
 * `java_type` Show a Java type's source by name or wildcard pattern. Lists results if multiple are found.
 * `java_method` Show the source code of a Java method, without over/under reading. Also includes source for super calls to reduce turns.

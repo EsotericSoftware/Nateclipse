@@ -31,7 +31,7 @@ export default function (pi: ExtensionAPI) {
 			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_grep") + accent(params.type) + extra("project", params.project) + extra(params.pattern) + " " + (params.flags || "-n");
+			let text = tool("java_grep") + " " + accent(params.type) + extra("project", params.project) + extra(params.pattern) + " " + (params.flags || "-n");
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -86,13 +86,14 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(msg);
 			}
 			// Parse grep output. Match lines are "file:line:content", context lines (from -A/-B/-C) are "file-line-content", "--" separates groups.
-			const rows: Array<{ file: string; line: number; content: string }> = [];
+			const rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }> = [];
 			for (const l of output.split("\n")) {
 				if (!l || l === "--") continue;
 				const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
 				if (!m) continue;
 				rows.push({ file: m[1], line: parseInt(m[3]), content: m[4] });
 			}
+			await enrichEnclosing(rows, signal);
 			return result(formatGrep(rows, ctx.cwd, false), { rows, cwd: ctx.cwd });
 		},
 		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
@@ -117,7 +118,7 @@ export default function (pi: ExtensionAPI) {
 			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_members") + accent(params.type) + extra("project", params.project);
+			let text = tool("java_members") + " " + accent(params.type) + extra("project", params.project);
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -206,7 +207,7 @@ export default function (pi: ExtensionAPI) {
 			...optionalProject(),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_type") + accent(params.type) + extra("project", params.project, "limit", params.limit);
+			let text = tool("java_type") + " " + accent(params.type) + extra("project", params.project, "limit", params.limit);
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -329,7 +330,7 @@ export default function (pi: ExtensionAPI) {
 			resolve: Type.Optional(Type.String({ description: "Explicit resolutions for ambiguous types eg: Array:com.badlogic.gdx.utils.Array,List:java.util.List" })),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_organize_imports") + accent(params.type || params.file);
+			let text = tool("java_organize_imports") + " " + accent(params.type || params.file);
 			if (params.resolve) text += extra("resolve", params.resolve);
 			return new Text(text, 0, 0);
 		},
@@ -392,8 +393,12 @@ export default function (pi: ExtensionAPI) {
 			const data = await jdt("/java_errors", params, signal);
 			if (data._error) throw new Error(data._error);
 			if (data.total === 0) return result("None");
+			await enrichEnclosing(data.errors, signal);
 			const text = groupByFile(data.errors, ctx.cwd, (e) => {
-				let s = `${e.line}  ${e.severity}: ${e.message}`;
+				let s = `${e.line}`;
+				const encl = enclosingLabel(e.enclosingType, e.enclosingMethod);
+				if (encl) s += `  ${encl}`;
+				s += `  ${e.severity}: ${e.message}`;
 				if (e.context) s += `\n${e.context}`;
 				return s;
 			});
@@ -409,7 +414,9 @@ export default function (pi: ExtensionAPI) {
 			const w = maxLineWidth(data.errors);
 			const grouped = renderGrouped(data.errors, cwd, (e) => {
 				const severity = e.severity == "error" ? "Error" : "Warning";
-				return paddedLine(e.line, w) + "  " + red(`${severity}: ${e.message}`) + (e.context ? `\n${stripIndent(e.context)}` : "")
+				const encl = enclosingLabel(e.enclosingType, e.enclosingMethod);
+				const enclPart = encl ? "  " + accent(encl) : "";
+				return paddedLine(e.line, w) + enclPart + "  " + red(`${severity}: ${e.message}`) + (e.context ? `\n${stripIndent(e.context)}` : "")
 			}, data.limited ? `Showing ${data.errors.length} of ${data.total}.` : undefined);
 			return new Text("\n" + applyCollapse(grouped, expanded), 0, 0);
 		},
@@ -592,7 +599,7 @@ export default function (pi: ExtensionAPI) {
 			project: Type.String({ description: "Eclipse project name" }),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_classpath") + accent(params.project);
+			let text = tool("java_classpath") + " " + accent(params.project);
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal) {
@@ -639,11 +646,12 @@ async function jdt(path: string, params: Record<string, any>, signal?: AbortSign
 	return response.json();
 }
 
-function formatGrep(rows: Array<{ file: string; line: number; content: string }>, cwd: string, styled: boolean): string {
-	const byFile = new Map<string, Array<{ line: number; content: string }>>();
+function formatGrep(rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }>, cwd: string, styled: boolean): string {
+	type Row = { line: number; content: string; enclosingType?: string; enclosingMethod?: string };
+	const byFile = new Map<string, Row[]>();
 	for (const r of rows) {
 		if (!byFile.has(r.file)) byFile.set(r.file, []);
-		byFile.get(r.file)!.push({ line: r.line, content: r.content });
+		byFile.get(r.file)!.push({ line: r.line, content: r.content, enclosingType: r.enclosingType, enclosingMethod: r.enclosingMethod });
 	}
 	let w = 0;
 	for (const r of rows) w = Math.max(w, String(r.line).length);
@@ -654,10 +662,41 @@ function formatGrep(rows: Array<{ file: string; line: number; content: string }>
 		for (const r of fileRows) {
 			const num = styled ? paddedLine(r.line, w) : String(r.line).padStart(w);
 			const body = styled ? javaCode(r.content) : r.content;
-			parts.push(num + "  " + body);
+			const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
+			const enclPart = encl ? (styled ? accent(encl) : encl) + "  " : "";
+			parts.push(num + "  " + enclPart + body);
 		}
 	}
 	return parts.join("\n");
+}
+
+function enclosingLabel(enclosingType: string | undefined, enclosingMethod: string | undefined): string {
+	if (!enclosingType) return "";
+	const simple = enclosingType.split(".").pop();
+	return enclosingMethod ? `${simple}.${enclosingMethod}` : simple!;
+}
+
+async function enrichEnclosing(rows: Array<{ file: string; line: number; enclosingType?: string; enclosingMethod?: string }>, signal?: AbortSignal): Promise<void> {
+	const byFile = new Map<string, Set<number>>();
+	for (const r of rows) {
+		if (!byFile.has(r.file)) byFile.set(r.file, new Set());
+		byFile.get(r.file)!.add(r.line);
+	}
+	const lookup = new Map<string, { type?: string; method?: string }>();
+	const promises: Promise<void>[] = [];
+	for (const [file, lines] of byFile) {
+		const linesParam = [...lines].join(",");
+		promises.push(jdt("/java_enclosing", { file, lines: linesParam }, signal).then((data) => {
+			if (data?._error || !Array.isArray(data?.enclosures)) return;
+			for (const e of data.enclosures) lookup.set(`${file}:${e.line}`, { type: e.type, method: e.method });
+		}).catch(() => { /* enrichment is best-effort */ }));
+	}
+	await Promise.all(promises);
+	for (const r of rows) {
+		const info = lookup.get(`${r.file}:${r.line}`);
+		if (info?.type) r.enclosingType = info.type;
+		if (info?.method) r.enclosingMethod = info.method;
+	}
 }
 
 function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string): string {
@@ -730,10 +769,10 @@ function filePath(value: string): string {
 	return _theme.fg("success", value);
 }
 function tool(text: string): string {
-	return white(text + " ");
+	return white(text);
 }
 function type(params: any): string {
-	let text = accent(params.type);
+	let text = " " + accent(params.type);
 	const member = params.member || params.method;
 	if (member) {
 		text += white("#") + member;

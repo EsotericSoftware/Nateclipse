@@ -85,6 +85,7 @@ public class WebJDT extends WebServer {
 		case "/java_resolve_type" -> java_resolve_type(exchange);
 		case "/java_organize_imports" -> java_organize_imports(exchange);
 		case "/java_classpath" -> java_classpath(exchange);
+		case "/java_enclosing" -> java_enclosing(exchange);
 		default -> exchange.response404();
 		}
 	}
@@ -194,9 +195,9 @@ public class WebJDT extends WebServer {
 			return;
 		}
 
-		// Validate fileFilter: if set and no workspace file matches the substring, fail fast rather
-		// than silently returning "No references" which is ambiguous between "file doesn't exist" and
-		// "file exists but has no references". Early-exit on first match so typical cases are fast.
+		// Validate fileFilter: if set and no workspace file matches the substring, fail fast rather than silently returning "No
+		// references" which is ambiguous between "file doesn't exist" and "file exists but has no references". Early-exit on first
+		// match so typical cases are fast.
 		if (fileFilter != null && !fileFilter.isEmpty()) {
 			var found = new boolean[] {false};
 			IResource target = projectName != null && !projectName.isEmpty()
@@ -620,9 +621,9 @@ public class WebJDT extends WebServer {
 		exchange.responseJson(200, json.toString());
 	}
 
-	/** Collects the directly overridden method plus any super methods invoked in the method body. Order: directly overridden
-	 * first, then any additional super.xxx(...) / super(...) targets in source order. Deduped by binding key. Uses JDT bindings
-	 * for accurate resolution across overloads, generics, and inner classes. */
+	/** Collects directly overridden method plus any super methods invoked in the method body. Order: directly overridden first,
+	 * then any additional super.xxx(...) / super(...) targets in source order. Deduped by binding key. Uses JDT bindings for
+	 * accurate resolution across overloads, generics, and inner classes. */
 	ArrayList<SuperMethodInfo> collectSuperMethods (ICompilationUnit cu, IMethod method) throws JavaModelException {
 		var results = new ArrayList<SuperMethodInfo>();
 
@@ -1110,6 +1111,72 @@ public class WebJDT extends WebServer {
 		var json = new Json();
 		json.object();
 		json.set("file", file.getAbsolutePath().replace('\\', '/'));
+		json.pop();
+		exchange.responseJson(200, json.toString());
+	}
+
+	/** Given a file and a list of 1-based line numbers, returns the innermost enclosing named type (and method, if any) for each
+	 * line. Anonymous and local types are skipped so matches inside lambdas / anonymous inner classes report the outer named
+	 * method. Lines outside any type (package/import/top-of-file) are omitted from the response. */
+	void java_enclosing (Exchange exchange) throws Throwable {
+		var query = exchange.decodeQuery();
+		String fp = query.get("file");
+		String linesStr = query.get("lines");
+
+		var json = new Json();
+		json.object();
+		json.array("enclosures");
+
+		if (fp != null && !fp.isEmpty() && linesStr != null && !linesStr.isEmpty()) {
+			var ipath = Path.fromOSString(fp);
+			var ifile = ResourcesPlugin.getWorkspace().getRoot().getFileForLocation(ipath);
+			if (ifile != null && ifile.exists() && JavaCore.create(ifile) instanceof ICompilationUnit cu) {
+				var buffer = cu.getBuffer();
+				if (buffer != null) {
+					var source = buffer.getContents();
+					var lineOffsets = new ArrayList<Integer>();
+					lineOffsets.add(0);
+					for (int i = 0; i < source.length(); i++)
+						if (source.charAt(i) == '\n') lineOffsets.add(i + 1);
+
+					for (var token : linesStr.split(",")) {
+						int line;
+						try {
+							line = Integer.parseInt(token.trim());
+						} catch (NumberFormatException ignored) {
+							continue;
+						}
+						if (line < 1 || line > lineOffsets.size()) continue;
+						int offset = lineOffsets.get(line - 1);
+						IMethod method = null;
+						IType type = null;
+						for (IJavaElement el = cu.getElementAt(offset); el != null; el = el.getParent()) {
+							if (el instanceof IMethod m && method == null) {
+								var dt = m.getDeclaringType();
+								if (dt != null && !dt.isAnonymous() && !dt.isLocal()) {
+									method = m;
+									type = dt;
+									break;
+								}
+							} else if (el instanceof IType t) {
+								if (!t.isAnonymous() && !t.isLocal()) {
+									type = t;
+									break;
+								}
+							}
+						}
+						if (type == null) continue;
+						json.object();
+						json.set("line", line);
+						json.set("type", type.getFullyQualifiedName());
+						if (method != null) json.set("method", method.getElementName());
+						json.pop();
+					}
+				}
+			}
+		}
+
+		json.pop();
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
