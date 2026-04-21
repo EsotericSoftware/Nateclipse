@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.concurrent.Executor;
 
+import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IResourceVisitor;
@@ -61,6 +62,7 @@ import org.eclipse.jdt.core.search.SearchRequestor;
 import org.eclipse.jdt.core.search.TypeNameMatch;
 import org.eclipse.jdt.launching.JavaRuntime;
 
+import com.esotericsoftware.nateclipse.utils.FileCache;
 import com.esotericsoftware.nateclipse.utils.Json;
 import com.esotericsoftware.nateclipse.utils.WebServer;
 
@@ -68,6 +70,7 @@ public class WebJDT extends WebServer {
 	static final int defaultLimit = 50;
 
 	private final Object organizeImportsLock = new Object();
+	final FileCache fileCache = new FileCache();
 
 	public WebJDT (int port, Executor executor) {
 		super(port, executor);
@@ -358,6 +361,9 @@ public class WebJDT extends WebServer {
 		String projectName = query.get("project");
 		String typeName = query.get("type");
 		int limit = intParam(query, "limit", 500);
+		// `lines=true` opts in to per-type line numbers in multi-match responses; this forces buffer loads (via FileCache) and is
+		// set only by the java_type pi tool. Callers that want just files (eg java_grep) omit it and skip that cost entirely.
+		boolean includeLines = "true".equals(query.get("lines"));
 
 		if (typeName == null || typeName.isEmpty()) {
 			error(exchange, 400, "Missing parameter: type");
@@ -374,24 +380,20 @@ public class WebJDT extends WebServer {
 		json.object();
 		json.array("matches");
 		boolean single = types.size() == 1;
-		for (var t : types) {
+		if (single) {
+			// Single-match: emit full source and location info, as before. Callers (java_type tool) always want the body.
+			var t = types.get(0);
 			json.object();
 			json.set("type", t.getFullyQualifiedName());
 			var resource = t.getResource();
 			if (resource != null) json.set("file", filePath(resource));
 
-			String source = null;
-			var cu = t.getCompilationUnit();
-			if (cu != null) {
-				var buffer = cu.getBuffer();
-				if (buffer != null) source = buffer.getContents();
-			}
-
-			if (single && source != null) {
+			FileCache.Entry cached = resource instanceof IFile f ? fileCache.get(f) : null;
+			if (cached != null) {
 				var range = t.getSourceRange();
 				if (range != null && range.getOffset() >= 0 && range.getLength() > 0) {
-					int startLine = lineNumber(source, range.getOffset());
-					String typeSource = source.substring(range.getOffset(), range.getOffset() + range.getLength());
+					int startLine = FileCache.lineFor(cached.lineOffsets, range.getOffset());
+					String typeSource = cached.source.substring(range.getOffset(), range.getOffset() + range.getLength());
 					String[] typeLines = typeSource.split("\n", -1);
 					int totalLines = typeLines.length;
 					int shownLines = Math.min(limit, totalLines);
@@ -413,11 +415,42 @@ public class WebJDT extends WebServer {
 					json.set("totalLines", totalLines);
 					json.set("source", shownSource);
 				}
-			} else if (source != null) {
-				var nameRange = t.getNameRange();
-				if (nameRange != null) json.set("line", lineNumber(source, nameRange.getOffset()));
 			}
 			json.pop();
+		} else {
+			// Multi-match: dedupe types to their owning file and emit one entry per file. `lines` (parallel to `types`) is only
+			// included when the caller opted in, because computing it requires loading each file's buffer.
+			var byFile = new LinkedHashMap<IResource, ArrayList<IType>>();
+			for (var t : types) {
+				var r = t.getResource();
+				if (r == null) continue;
+				byFile.computeIfAbsent(r, k -> new ArrayList<>()).add(t);
+			}
+			for (var entry : byFile.entrySet()) {
+				var resource = entry.getKey();
+				var typesInFile = entry.getValue();
+				json.object();
+				json.set("file", filePath(resource));
+				json.array("types");
+				for (var t : typesInFile)
+					json.value(t.getFullyQualifiedName());
+				json.pop();
+				if (includeLines && resource instanceof IFile f) {
+					var cached = fileCache.get(f);
+					if (cached != null) {
+						json.array("lines");
+						for (var t : typesInFile) {
+							var nameRange = t.getNameRange();
+							int line = nameRange != null && nameRange.getOffset() >= 0
+								? FileCache.lineFor(cached.lineOffsets, nameRange.getOffset())
+								: 0;
+							json.value(line);
+						}
+						json.pop();
+					}
+				}
+				json.pop();
+			}
 		}
 		json.pop();
 		if (single) {
@@ -1164,64 +1197,82 @@ public class WebJDT extends WebServer {
 		exchange.responseJson(200, json.toString());
 	}
 
-	/** Given a file and a list of 1-based line numbers, returns the innermost enclosing named type (and method, if any) for each
-	 * line. Anonymous and local types are skipped so matches inside lambdas / anonymous inner classes report the outer named
-	 * method. Lines outside any type (package/import/top-of-file) are omitted from the response. */
+	/** Given (file, 1-based lines) pairs, returns the innermost enclosing named type (and method, if any) for each line. Anonymous
+	 * and local types are skipped so matches inside lambdas / anonymous inner classes report the outer named method. Lines outside
+	 * any named type (package/import/top-of-file) are omitted from the response.
+	 * <p>
+	 * Batch mode: request body is one line per file in the form <code>&lt;filepath&gt;\t&lt;line1&gt;,&lt;line2&gt;,...</code>.
+	 * Enclosures in the response are tagged with their file so the caller can re-associate them.
+	 * <p>
+	 * Back-compat single-file mode: <code>?file=...&amp;lines=1,2,3</code> without a body still works; enclosures omit the file
+	 * field. */
 	void java_enclosing (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String fp = query.get("file");
-		String linesStr = query.get("lines");
+		// Collect (file, lines-csv) pairs from either the POST body or fall back to query params for single-file callers.
+		var requests = new ArrayList<String[]>();
+		String body = exchange.requestBodyString();
+		boolean batched = body != null && !body.isEmpty();
+		if (batched) {
+			for (var entryLine : body.split("\n")) {
+				if (entryLine.isEmpty()) continue;
+				int tab = entryLine.indexOf('\t');
+				if (tab <= 0 || tab == entryLine.length() - 1) continue;
+				requests.add(new String[] {entryLine.substring(0, tab), entryLine.substring(tab + 1)});
+			}
+		} else {
+			var query = exchange.decodeQuery();
+			String fp = query.get("file");
+			String linesStr = query.get("lines");
+			if (fp != null && !fp.isEmpty() && linesStr != null && !linesStr.isEmpty()) requests.add(new String[] {fp, linesStr});
+		}
 
 		var json = new Json();
 		json.object();
 		json.array("enclosures");
 
-		if (fp != null && !fp.isEmpty() && linesStr != null && !linesStr.isEmpty()) {
-			var ipath = Path.fromOSString(fp);
-			var ifile = ResourcesPlugin.getWorkspace().getRoot().getFileForLocation(ipath);
-			if (ifile != null && ifile.exists() && JavaCore.create(ifile) instanceof ICompilationUnit cu) {
-				var buffer = cu.getBuffer();
-				if (buffer != null) {
-					var source = buffer.getContents();
-					var lineOffsets = new ArrayList<Integer>();
-					lineOffsets.add(0);
-					for (int i = 0; i < source.length(); i++)
-						if (source.charAt(i) == '\n') lineOffsets.add(i + 1);
+		var workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
+		for (var req : requests) {
+			String fp = req[0];
+			String linesStr = req[1];
+			var ifile = workspaceRoot.getFileForLocation(Path.fromOSString(fp));
+			if (ifile == null || !ifile.exists()) continue;
+			if (!(JavaCore.create(ifile) instanceof ICompilationUnit cu)) continue;
+			var cached = fileCache.get(ifile);
+			if (cached == null) continue;
+			int lineCount = cached.lineOffsets.length;
 
-					for (var token : linesStr.split(",")) {
-						int line;
-						try {
-							line = Integer.parseInt(token.trim());
-						} catch (NumberFormatException ignored) {
-							continue;
+			for (var token : linesStr.split(",")) {
+				int line;
+				try {
+					line = Integer.parseInt(token.trim());
+				} catch (NumberFormatException ignored) {
+					continue;
+				}
+				if (line < 1 || line > lineCount) continue;
+				int offset = cached.lineOffsets[line - 1];
+				IMethod method = null;
+				IType type = null;
+				for (IJavaElement el = cu.getElementAt(offset); el != null; el = el.getParent()) {
+					if (el instanceof IMethod m && method == null) {
+						var dt = m.getDeclaringType();
+						if (dt != null && !dt.isAnonymous() && !dt.isLocal()) {
+							method = m;
+							type = dt;
+							break;
 						}
-						if (line < 1 || line > lineOffsets.size()) continue;
-						int offset = lineOffsets.get(line - 1);
-						IMethod method = null;
-						IType type = null;
-						for (IJavaElement el = cu.getElementAt(offset); el != null; el = el.getParent()) {
-							if (el instanceof IMethod m && method == null) {
-								var dt = m.getDeclaringType();
-								if (dt != null && !dt.isAnonymous() && !dt.isLocal()) {
-									method = m;
-									type = dt;
-									break;
-								}
-							} else if (el instanceof IType t) {
-								if (!t.isAnonymous() && !t.isLocal()) {
-									type = t;
-									break;
-								}
-							}
+					} else if (el instanceof IType t) {
+						if (!t.isAnonymous() && !t.isLocal()) {
+							type = t;
+							break;
 						}
-						if (type == null) continue;
-						json.object();
-						json.set("line", line);
-						json.set("type", type.getFullyQualifiedName());
-						if (method != null) json.set("method", method.getElementName());
-						json.pop();
 					}
 				}
+				if (type == null) continue;
+				json.object();
+				if (batched) json.set("file", fp);
+				json.set("line", line);
+				json.set("type", type.getFullyQualifiedName());
+				if (method != null) json.set("method", method.getElementName());
+				json.pop();
 			}
 		}
 
@@ -1467,12 +1518,27 @@ public class WebJDT extends WebServer {
 		return null;
 	}
 
-	IJavaSearchScope searchScope (String projectName) throws JavaModelException {
+	IJavaSearchScope searchScope (String projectName) throws CoreException {
+		// SOURCES | REFERENCED_PROJECTS: every endpoint here is source-oriented (references, callers, type declarations live in
+		// source). Including APPLICATION_LIBRARIES / SYSTEM_LIBRARIES would force SearchEngine to walk every type in every JAR on
+		// the classpath (JDK, all dependencies) for wildcard patterns like "*" or "Foo*", costing many seconds on larger
+		// workspaces, only to have us filter the binaries out in the requestor.
+		int mask = IJavaSearchScope.SOURCES | IJavaSearchScope.REFERENCED_PROJECTS;
 		if (projectName != null && !projectName.isEmpty()) {
 			var project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-			if (project.exists()) return SearchEngine.createJavaSearchScope(new IJavaElement[] {JavaCore.create(project)});
+			if (project.exists()) return SearchEngine.createJavaSearchScope(new IJavaElement[] {JavaCore.create(project)}, mask);
 		}
-		return SearchEngine.createWorkspaceScope();
+		// createWorkspaceScope() includes binaries and has no mask overload; build the equivalent source-only scope ourselves
+		// by enumerating open Java projects.
+		var projects = ResourcesPlugin.getWorkspace().getRoot().getProjects();
+		var elements = new ArrayList<IJavaElement>(projects.length);
+		for (var p : projects) {
+			if (!p.isOpen()) continue;
+			if (!p.hasNature(JavaCore.NATURE_ID)) continue;
+			var jp = JavaCore.create(p);
+			if (jp != null) elements.add(jp);
+		}
+		return SearchEngine.createJavaSearchScope(elements.toArray(new IJavaElement[0]), mask);
 	}
 
 	String filePath (IResource resource) {

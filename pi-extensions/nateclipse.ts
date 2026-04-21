@@ -3,13 +3,14 @@ import { highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
+import os from "node:os";
 
 const PORT = 9001;
 const BASE = `http://localhost:${PORT}`;
 const PROJECT_PARAMS = false; // Clanker narrows tool usage too often
 const GREP_MAX_FILES = 5000;
 const GREP_MAX_MATCHES = 500;
-const GREP_CHUNK = 250;
+const GREP_CHUNK = 100;
 const TYPE_MAX = 200;
 const ORGANIZE_IMPORTS_MAX = 100;
 
@@ -17,15 +18,29 @@ export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 
 	// Run grep across many files in chunks to stay under Windows CreateProcess cmdline limits (~32KB).
+	// Chunks are processed by a bounded worker pool so large file sets don't serialize one process per chunk.
 	// Returned code is sticky: error (2) beats match (0) beats no-match (1).
 	async function runGrepChunked(flagArgs: string[], pattern: string, files: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string; code: number }> {
+		const chunks: string[][] = [];
+		for (let i = 0; i < files.length; i += GREP_CHUNK) chunks.push(files.slice(i, i + GREP_CHUNK));
+		const results: Array<{ stdout: string; stderr: string; code: number }> = new Array(chunks.length);
+		let nextIdx = 0;
+		const worker = async () => {
+			while (true) {
+				const idx = nextIdx++;
+				if (idx >= chunks.length) return;
+				// -H forces filename prefix so output is uniformly "file:line:content" regardless of batch size.
+				results[idx] = await pi.exec("grep", [...flagArgs, "-H", pattern, ...chunks[idx]], { signal });
+			}
+		};
+		const maxThreads = Math.max(2, os.cpus().length - 1);
+		const n = Math.min(maxThreads, chunks.length);
+		await Promise.all(Array.from({ length: n }, worker));
 		let stdout = "";
 		let stderr = "";
 		let code = 1;
-		for (let i = 0; i < files.length; i += GREP_CHUNK) {
-			const batch = files.slice(i, i + GREP_CHUNK);
-			// -H forces filename prefix so output is uniformly "file:line:content" regardless of batch size.
-			const r = await pi.exec("grep", [...flagArgs, "-H", pattern, ...batch], { signal });
+		for (const r of results) {
+			if (!r) continue;
 			stdout += r.stdout || "";
 			stderr += r.stderr || "";
 			if (r.code === 2) code = 2;
@@ -55,14 +70,16 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
+			// Multi-match /java_type responses are grouped as { file, types: [...] }. We only need files for grep, so no
+			// `lines=true` -- server skips buffer loads entirely in that path.
 			const typeData = await jdt("/java_type", { type: params.type, project: params.project }, signal);
 			if (typeData._error) throw new Error(`Type not found: ${params.type}`);
 			const matches = typeData.matches || [];
-			const files = [...new Set(matches.filter((t: any) => t.file).map((t: any) => t.file as string))];
+			const files = matches.filter((m: any) => m.file).map((m: any) => m.file as string);
 			if (files.length === 0) throw new Error(`Type not found: ${params.type}`);
 			if (files.length > GREP_MAX_FILES) {
 				throw tooManyError(params.type, files.length, GREP_MAX_FILES, "files",
-					matches.map((m: any) => m.type),
+					matches.flatMap((m: any) => m.types || (m.type ? [m.type] : [])),
 					"Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
 			}
 
@@ -244,16 +261,16 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			rejectBareWildcard("java_type", params.type, "Narrow the pattern");
-			const data = await jdt("/java_type", params, signal);
+			// lines=true asks the server to include per-type line numbers in multi-match responses. This is only set
+			// for the java_type tool (not exposed to the model); callers that just want files (eg java_grep) skip it.
+			const data = await jdt("/java_type", { ...params, lines: true }, signal);
 			if (data._error) throw new Error(data._error);
-			const matches = data.matches || [];
-			if (matches.length === 0) throw new Error("No matching types for: " + params.type);
-			if (matches.length > TYPE_MAX) {
-				throw tooManyError(params.type, matches.length, TYPE_MAX, "types",
-					matches.map((m: any) => m.type), "Narrow the pattern");
-			}
-			if (matches.length === 1 && matches[0].source != null) {
-				const m = matches[0];
+			const rawMatches = data.matches || [];
+			if (rawMatches.length === 0) throw new Error("No matching types for: " + params.type);
+			// Single-match responses still carry `source`; leave them alone. Multi-match responses are grouped by file as
+			// { file, types: [...], lines: [...] } -- flatten back to per-type rows for the existing formatters.
+			if (rawMatches.length === 1 && rawMatches[0].source != null) {
+				const m = rawMatches[0];
 				const path = relPath(m.file, ctx.cwd);
 				const header = `${m.type}  ${path}:${m.line}-${m.endLine}`;
 				const parts = [header, m.source];
@@ -263,6 +280,13 @@ export default function (pi: ExtensionAPI) {
 					parts.push(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
 				}
 				return result(withWarning(parts.join("\n"), data.warning), { single: m, warning: data.warning, cwd: ctx.cwd });
+			}
+			const matches = rawMatches.flatMap((g: any) =>
+				(g.types || []).map((t: string, i: number) => ({ type: t, file: g.file, line: g.lines?.[i] }))
+			);
+			if (matches.length > TYPE_MAX) {
+				throw tooManyError(params.type, matches.length, TYPE_MAX, "types",
+					matches.map((m: any) => m.type), "Narrow the pattern");
 			}
 			const text = groupByFile(matches, ctx.cwd, (t) => {
 				let s = t.line ? `${t.line}` : " ";
@@ -374,11 +398,11 @@ export default function (pi: ExtensionAPI) {
 				const typeData = await jdt("/java_type", { type: params.type }, signal);
 				if (typeData._error) throw new Error(`Type not found: ${params.type}`);
 				const typeMatches = typeData.matches || [];
-				const typeFiles = [...new Set(typeMatches.filter((t: any) => t.file).map((t: any) => t.file as string))];
+				const typeFiles = typeMatches.filter((m: any) => m.file).map((m: any) => m.file as string);
 				if (typeFiles.length === 0) throw new Error(`Type not found: ${params.type}`);
 				if (typeFiles.length > ORGANIZE_IMPORTS_MAX) {
 					throw tooManyError(params.type, typeFiles.length, ORGANIZE_IMPORTS_MAX, "files",
-						typeMatches.map((m: any) => m.type),
+						typeMatches.flatMap((m: any) => m.types || (m.type ? [m.type] : [])),
 						"Narrow the pattern or target specific files, this tool writes to every match");
 				}
 			}
@@ -662,13 +686,19 @@ function applyCollapse(text: string, expanded: boolean): string { // Matches rea
 	return lines.slice(0, 10).join("\n") + _theme.fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
 }
 
-async function jdt(path: string, params: Record<string, any>, signal?: AbortSignal): Promise<any> {
+async function jdt(path: string, params: Record<string, any>, signal?: AbortSignal, body?: string): Promise<any> {
 	const url = new URL(path, BASE);
 	for (const [k, v] of Object.entries(params))
 		if (v != null && v !== "") url.searchParams.set(k, String(v));
+	const init: RequestInit = { signal };
+	if (body !== undefined) {
+		init.method = "POST";
+		init.headers = { "Content-Type": "text/plain" };
+		init.body = body;
+	}
 	let response;
 	try {
-		response = await fetch(url.toString(), { signal });
+		response = await fetch(url.toString(), init);
 	} catch (e: any) {
 		throw new Error("Eclipse could not be reached on port: " + PORT);
 	}
@@ -722,15 +752,16 @@ async function enrichEnclosing(rows: Array<{ file: string; line: number; enclosi
 		byFile.get(r.file)!.add(r.line);
 	}
 	const lookup = new Map<string, { type?: string; method?: string }>();
-	const promises: Promise<void>[] = [];
-	for (const [file, lines] of byFile) {
-		const linesParam = [...lines].join(",");
-		promises.push(jdt("/java_enclosing", { file, lines: linesParam }, signal).then((data) => {
-			if (data?._error || !Array.isArray(data?.enclosures)) return;
-			for (const e of data.enclosures) lookup.set(`${file}:${e.line}`, { type: e.type, method: e.method });
-		}).catch(() => { /* enrichment is best-effort */ }));
-	}
-	await Promise.all(promises);
+	// One batched POST instead of one request per file. Body is line-oriented to avoid a JSON parser on the server:
+	// each line is "<filepath>\t<csv-line-numbers>". Enclosures in the response are tagged with `file`.
+	const bodyLines: string[] = [];
+	for (const [file, lines] of byFile) bodyLines.push(`${file}\t${[...lines].join(",")}`);
+	try {
+		const data = await jdt("/java_enclosing", {}, signal, bodyLines.join("\n"));
+		if (!data?._error && Array.isArray(data?.enclosures)) {
+			for (const e of data.enclosures) lookup.set(`${e.file}:${e.line}`, { type: e.type, method: e.method });
+		}
+	} catch { /* enrichment is best-effort */ }
 	for (const r of rows) {
 		const info = lookup.get(`${r.file}:${r.line}`);
 		if (info?.type) r.enclosingType = info.type;
