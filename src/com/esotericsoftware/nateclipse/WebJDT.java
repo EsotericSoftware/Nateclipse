@@ -826,65 +826,103 @@ public class WebJDT extends WebServer {
 		var type = resolveTypeOrError(exchange, projectName, typeName);
 		if (type == null) return;
 
-		var method = findMethod(type, methodName, paramTypes);
-		if (method == null) {
+		var methods = findMethods(type, methodName, paramTypes);
+		if (methods.isEmpty()) {
 			error(exchange, 404, "Type " + type.getFullyQualifiedName() + " found, doesn't have method: " + methodName);
 			return;
 		}
 
 		var scope = searchScope(projectName);
-		var pattern = SearchPattern.createPattern(method, IJavaSearchConstants.REFERENCES);
-		var matches = new ArrayList<SearchMatch>();
-		new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
-			new SearchRequestor() {
-				public void acceptSearchMatch (SearchMatch match) {
-					if (match.getAccuracy() == SearchMatch.A_ACCURATE) matches.add(match);
+
+		// Per-overload search so each match is unambiguously attributed to one signature.
+		// callers across overloads, in declaration order; counts kept per overload (full counts, even when truncated).
+		var overloadCounts = new LinkedHashMap<String, Integer>();
+		var callers = new ArrayList<CallerRow>();
+		for (var method : methods) {
+			String overloadKey = methodKey(method);
+			overloadCounts.putIfAbsent(overloadKey, 0);
+			var pattern = SearchPattern.createPattern(method, IJavaSearchConstants.REFERENCES);
+			var matches = new ArrayList<SearchMatch>();
+			new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
+				new SearchRequestor() {
+					public void acceptSearchMatch (SearchMatch match) {
+						if (match.getAccuracy() == SearchMatch.A_ACCURATE) matches.add(match);
+					}
+				}, new NullProgressMonitor());
+
+			// Dedupe by file+line within this overload: a line like `foo(); foo();` produces two match offsets we collapse.
+			var seenFileLine = new LinkedHashSet<String>();
+			for (var match : matches) {
+				var resource = match.getResource();
+				if (resource == null) continue;
+				String fp = filePath(resource);
+				var source = getSource(match);
+				int line = source != null ? lineNumber(source, match.getOffset()) : 0;
+				if (line > 0 && !seenFileLine.add(fp + ":" + line)) continue;
+
+				var row = new CallerRow();
+				row.file = fp;
+				row.line = line;
+				row.context = source != null ? contextLine(source, match.getOffset()) : null;
+				if (match.getElement() instanceof IMethod caller) {
+					row.enclosingType = caller.getDeclaringType().getFullyQualifiedName();
+					row.enclosingMethod = caller.getElementName();
 				}
-			}, new NullProgressMonitor());
+				row.overload = overloadKey;
+				callers.add(row);
+				overloadCounts.merge(overloadKey, 1, Integer::sum);
+			}
+		}
+
+		boolean multipleOverloads = overloadCounts.size() > 1;
+		int total = callers.size();
 
 		var json = new Json();
 		json.object();
 		json.array("callers");
-		int total = 0;
+		int shown = 0;
 		boolean limited = false;
-		// Dedupe by file+line: a line like `foo(); foo();` produces two match offsets we collapse to one entry.
-		var seenFileLine = new LinkedHashSet<String>();
-
-		for (var match : matches) {
-			var resource = match.getResource();
-			if (resource == null) continue;
-
-			String fp = filePath(resource);
-			var source = getSource(match);
-			int line = source != null ? lineNumber(source, match.getOffset()) : 0;
-			if (line > 0 && !seenFileLine.add(fp + ":" + line)) continue;
-
-			total++;
-			if (!unlimited && total > limit) {
+		for (var c : callers) {
+			if (!unlimited && shown >= limit) {
 				limited = true;
 				break;
 			}
-
+			shown++;
 			json.object();
-			json.set("file", fp);
-			if (match.getElement() instanceof IMethod caller) {
-				json.set("enclosingType", caller.getDeclaringType().getFullyQualifiedName());
-				json.set("enclosingMethod", caller.getElementName());
-			}
-			if (source != null) {
-				json.set("line", line);
-				json.set("context", contextLine(source, match.getOffset()));
+			json.set("file", c.file);
+			if (c.enclosingType != null) json.set("enclosingType", c.enclosingType);
+			if (c.enclosingMethod != null) json.set("enclosingMethod", c.enclosingMethod);
+			if (c.line > 0) json.set("line", c.line);
+			if (c.context != null) json.set("context", c.context);
+			if (multipleOverloads) json.set("overload", c.overload);
+			json.pop();
+		}
+		json.pop();
+		if (multipleOverloads) {
+			json.array("overloads");
+			for (var e : overloadCounts.entrySet()) {
+				json.object();
+				json.set("signature", e.getKey());
+				json.set("count", e.getValue());
+				json.pop();
 			}
 			json.pop();
 		}
-
-		json.pop();
 		json.set("total", total);
 		if (limited) json.set("limited", true);
 		var warning = fileErrorsWarning(type);
 		if (warning != null) json.set("warning", warning);
 		json.pop();
 		exchange.responseJson(200, json.toString());
+	}
+
+	static class CallerRow {
+		String file;
+		int line;
+		String context;
+		String enclosingType;
+		String enclosingMethod;
+		String overload;
 	}
 
 	void java_resolve_type (Exchange exchange) throws Throwable {
@@ -1394,6 +1432,30 @@ public class WebJDT extends WebServer {
 		for (var method : type.getMethods())
 			if (method.getElementName().equals(methodName)) return method;
 		return null;
+	}
+
+	ArrayList<IMethod> findMethods (IType type, String methodName, String paramTypes) throws JavaModelException {
+		var result = new ArrayList<IMethod>();
+		if (paramTypes != null && !paramTypes.isEmpty()) {
+			var method = findMethod(type, methodName, paramTypes);
+			if (method != null) result.add(method);
+			return result;
+		}
+		for (var method : type.getMethods())
+			if (method.getElementName().equals(methodName)) result.add(method);
+		return result;
+	}
+
+	String methodKey (IMethod m) throws JavaModelException {
+		var sb = new StringBuilder();
+		sb.append(m.getElementName()).append('(');
+		var params = m.getParameterTypes();
+		for (int i = 0; i < params.length; i++) {
+			if (i > 0) sb.append(", ");
+			sb.append(Signature.getSignatureSimpleName(params[i]));
+		}
+		sb.append(')');
+		return sb.toString();
 	}
 
 	IJavaElement findMember (IType type, String memberName, String paramTypes) throws JavaModelException {

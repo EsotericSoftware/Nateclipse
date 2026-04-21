@@ -559,7 +559,7 @@ export default function (pi: ExtensionAPI) {
 				const msg = data.warning || "No callers for: " + typePlain(params);
 				throw new Error(msg);
 			}
-			const text = groupByFile(data.callers, ctx.cwd, (r) => {
+			const formatPlain = (r: any) => {
 				let s = `${r.line}`;
 				if (r.enclosingType) {
 					const simple = r.enclosingType.split(".").pop();
@@ -567,7 +567,10 @@ export default function (pi: ExtensionAPI) {
 				}
 				if (r.context) s += `  ${r.context}`;
 				return s;
-			});
+			};
+			const text = data.overloads && data.overloads.length > 1
+				? renderCallersByOverload(data.callers, data.overloads, ctx.cwd, formatPlain, false)
+				: groupByFile(data.callers, ctx.cwd, formatPlain);
 			const suffix = data.limited ? `\n\nShowing ${data.callers.length} of ${data.total}\nUse limit for more` : "";
 			return result(withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd });
 		},
@@ -580,12 +583,16 @@ export default function (pi: ExtensionAPI) {
 			}
 			const { data, cwd } = r.details;
 			const w = maxLineWidth(data.callers);
-			const grouped = renderGrouped(data.callers, cwd, (r) => {
+			const formatStyled = (r: any) => {
 				let s = paddedLine(r.line, w);
 				if (r.enclosingType) s += "  " + accent(r.enclosingType.split(".").pop() + (r.enclosingMethod ? "." + r.enclosingMethod : ""));
 				if (r.context) s += "  " + r.context;
 				return s;
-			}, data.limited ? `Showing ${data.callers.length} of ${data.total}.` : undefined);
+			};
+			const limitMsg = data.limited ? `Showing ${data.callers.length} of ${data.total}.` : undefined;
+			const grouped = data.overloads && data.overloads.length > 1
+				? renderCallersByOverload(data.callers, data.overloads, cwd, formatStyled, true, limitMsg)
+				: renderGrouped(data.callers, cwd, formatStyled, limitMsg);
 			return new Text("\n" + withWarningStyled(applyCollapse(grouped, expanded), data.warning), 0, 0);
 		},
 	});
@@ -713,6 +720,39 @@ function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string):
 		for (const line of lines) parts.push(line);
 	}
 	return parts.join("\n");
+}
+
+// Groups callers by overload signature, then by file within each overload.
+// `overloads` lists ALL overloads with their full caller counts (which may exceed the displayed callers if truncated).
+function renderCallersByOverload(
+	callers: any[],
+	overloads: Array<{ signature: string; count: number }>,
+	cwd: string,
+	formatItem: (r: any) => string,
+	styled: boolean,
+	limitMsg?: string,
+): string {
+	const byOverload = new Map<string, any[]>();
+	for (const o of overloads) byOverload.set(o.signature, []);
+	for (const c of callers) {
+		const key = c.overload;
+		if (!byOverload.has(key)) byOverload.set(key, []);
+		byOverload.get(key)!.push(c);
+	}
+	const sections: string[] = [];
+	for (const o of overloads) {
+		const rows = byOverload.get(o.signature) || [];
+		const countLabel = `${o.count} caller${o.count === 1 ? "" : "s"}`;
+		const header = styled ? accent(o.signature) + "  " + _theme.fg("dim", countLabel) : `${o.signature}  ${countLabel}`;
+		if (rows.length === 0) {
+			sections.push(header + (o.count > 0 ? (styled ? "  " + _theme.fg("dim", "(not shown)") : "  (not shown)") : ""));
+			continue;
+		}
+		const body = styled ? renderGrouped(rows, cwd, formatItem) : groupByFile(rows, cwd, formatItem);
+		sections.push(header + "\n" + body);
+	}
+	if (limitMsg) sections.push(styled ? _theme.fg("dim", limitMsg) : limitMsg);
+	return sections.join("\n\n");
 }
 
 function renderGrouped(items: any[], cwd: string, formatItem: (r: any) => string, limitMsg?: string): string {
