@@ -6,6 +6,7 @@ import static java.nio.charset.StandardCharsets.*;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -94,15 +95,15 @@ public class WebJDT extends WebServer {
 	}
 
 	void java_errors (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
-		int limit = intParam(query, "limit", defaultLimit);
-		boolean unlimited = "true".equals(query.get("unlimited"));
+		var p = new Params(exchange);
+		String projectName = p.get("project");
+		int limit = p.intOpt("limit", defaultLimit);
+		boolean unlimited = p.bool("unlimited");
 
 		var root = ResourcesPlugin.getWorkspace().getRoot();
 
 		IResource target;
-		if (projectName != null && !projectName.isEmpty()) {
+		if (projectName != null) {
 			var project = root.getProject(projectName);
 			if (!project.exists()) {
 				error(exchange, 404, "Project not found: " + projectName);
@@ -167,27 +168,22 @@ public class WebJDT extends WebServer {
 			json.pop();
 		}
 		json.pop();
-		json.set("total", total);
-		if (!unlimited && total > limit) json.set("limited", true);
+		writeLimited(json, total, limit, unlimited);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
 
 	void java_references (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
-		String typeName = query.get("type");
-		String memberName = query.get("member");
-		String paramTypes = query.get("paramTypes");
-		String fileFilter = query.get("file");
-		String access = query.get("access");
-		int limit = intParam(query, "limit", defaultLimit);
-		boolean unlimited = "true".equals(query.get("unlimited"));
-
-		if (typeName == null || typeName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: type");
-			return;
-		}
+		var p = new Params(exchange);
+		String projectName = p.get("project");
+		String typeName = p.require("type");
+		if (typeName == null) return;
+		String memberName = p.get("member");
+		String paramTypes = p.get("paramTypes");
+		String fileFilter = p.get("file");
+		String access = p.get("access");
+		int limit = p.intOpt("limit", defaultLimit);
+		boolean unlimited = p.bool("unlimited");
 
 		var type = resolveTypeOrError(exchange, projectName, typeName);
 		if (type == null) return;
@@ -198,13 +194,10 @@ public class WebJDT extends WebServer {
 			return;
 		}
 
-		// Validate fileFilter: if set and no workspace file matches the substring, fail fast rather than silently returning "No
-		// references" which is ambiguous between "file doesn't exist" and "file exists but has no references". Early-exit on first
-		// match so typical cases are fast.
-		if (fileFilter != null && !fileFilter.isEmpty()) {
+		// Validate fileFilter: missing file is 404, else an empty result is ambiguous.
+		if (fileFilter != null) {
 			var found = new boolean[] {false};
-			IResource target = projectName != null && !projectName.isEmpty()
-				? ResourcesPlugin.getWorkspace().getRoot().getProject(projectName)
+			IResource target = projectName != null ? ResourcesPlugin.getWorkspace().getRoot().getProject(projectName)
 				: ResourcesPlugin.getWorkspace().getRoot();
 			if (target.exists()) {
 				IResourceVisitor visitor = res -> {
@@ -229,28 +222,20 @@ public class WebJDT extends WebServer {
 		else if ("read".equals(access)) //
 			searchFor = IJavaSearchConstants.READ_ACCESSES;
 		var scope = searchScope(projectName);
-		var participants = new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()};
 		var matches = new ArrayList<SearchMatch>();
-		var requestor = new SearchRequestor() {
-			public void acceptSearchMatch (SearchMatch match) {
-				if (match.getAccuracy() == SearchMatch.A_ACCURATE) matches.add(match);
-			}
-		};
+		var requestor = matchCollector(matches);
 		ArrayList<SearchMatch> deduped = matches;
 		if (access == null) {
 			// WRITE_ACCESSES includes initializers that REFERENCES misses, search both and dedupe.
-			new SearchEngine().search(SearchPattern.createPattern(element, IJavaSearchConstants.WRITE_ACCESSES), participants, scope,
-				requestor, new NullProgressMonitor());
-			new SearchEngine().search(SearchPattern.createPattern(element, IJavaSearchConstants.REFERENCES), participants, scope,
-				requestor, new NullProgressMonitor());
+			search(SearchPattern.createPattern(element, IJavaSearchConstants.WRITE_ACCESSES), scope, requestor);
+			search(SearchPattern.createPattern(element, IJavaSearchConstants.REFERENCES), scope, requestor);
 			// Remove duplicates, keeping order (writes first, then remaining references).
 			deduped = new ArrayList<SearchMatch>();
 			var dedupeSeen = new LinkedHashSet<String>();
 			for (var m : matches)
 				if (m.getResource() != null && dedupeSeen.add(m.getResource().getFullPath() + ":" + m.getOffset())) deduped.add(m);
 		} else {
-			new SearchEngine().search(SearchPattern.createPattern(element, searchFor), participants, scope, requestor,
-				new NullProgressMonitor());
+			search(SearchPattern.createPattern(element, searchFor), scope, requestor);
 		}
 
 		var json = new Json();
@@ -289,26 +274,20 @@ public class WebJDT extends WebServer {
 			json.pop();
 		}
 		json.pop();
-		json.set("total", total);
-		if (!unlimited && total > limit) json.set("limited", true);
-		var warning = fileErrorsWarning(type);
-		if (warning != null) json.set("warning", warning);
+		writeLimited(json, total, limit, unlimited);
+		writeWarning(json, type);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
 
 	void java_hierarchy (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
-		String typeName = query.get("type");
-		String direction = query.getOrDefault("direction", "all");
-		String methodName = query.get("method");
-		String methodParamTypes = query.get("paramTypes");
-
-		if (typeName == null || typeName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: type");
-			return;
-		}
+		var p = new Params(exchange);
+		String projectName = p.get("project");
+		String typeName = p.require("type");
+		if (typeName == null) return;
+		String direction = p.getOrDefault("direction", "all");
+		String methodName = p.get("method");
+		String methodParamTypes = p.get("paramTypes");
 
 		var type = resolveTypeOrError(exchange, projectName, typeName);
 		if (type == null) return;
@@ -327,7 +306,7 @@ public class WebJDT extends WebServer {
 		for (var t : types) {
 			if (t.getFullyQualifiedName().equals("java.lang.Object")) continue;
 			IMethod override = null;
-			if (methodName != null && !methodName.isEmpty()) {
+			if (methodName != null) {
 				override = findMethod(t, methodName, methodParamTypes);
 				if (override == null) continue;
 			}
@@ -350,25 +329,19 @@ public class WebJDT extends WebServer {
 			json.pop();
 		}
 		json.pop();
-		var warning = fileErrorsWarning(type);
-		if (warning != null) json.set("warning", warning);
+		writeWarning(json, type);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
 
 	void java_type (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
-		String typeName = query.get("type");
-		int limit = intParam(query, "limit", 500);
-		// `lines=true` opts in to per-type line numbers in multi-match responses; this forces buffer loads (via FileCache) and is
-		// set only by the java_type pi tool. Callers that want just files (eg java_grep) omit it and skip that cost entirely.
-		boolean includeLines = "true".equals(query.get("lines"));
-
-		if (typeName == null || typeName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: type");
-			return;
-		}
+		var p = new Params(exchange);
+		String projectName = p.get("project");
+		String typeName = p.require("type");
+		if (typeName == null) return;
+		int limit = p.intOpt("limit", 500);
+		// `lines=true` forces buffer loads for per-type line numbers; only the java_type pi tool sets it.
+		boolean includeLines = p.bool("lines");
 
 		var types = searchTypes(projectName, typeName);
 		if (types.isEmpty()) {
@@ -453,15 +426,12 @@ public class WebJDT extends WebServer {
 			}
 		}
 		json.pop();
-		if (single) {
-			var warning = fileErrorsWarning(types.get(0));
-			if (warning != null) json.set("warning", warning);
-		}
+		if (single) writeWarning(json, types.get(0));
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
 
-	/** Search for types by simple name, fully-qualified name, or wildcard pattern. Returns source types only. */
+	/** Search for types by simple name, FQN, or wildcard pattern. Source types only. */
 	ArrayList<IType> searchTypes (String projectName, String typeName) throws CoreException {
 		boolean hasWildcards = typeName.contains("*") || typeName.contains("?");
 
@@ -479,27 +449,16 @@ public class WebJDT extends WebServer {
 			: SearchPattern.R_EXACT_MATCH | SearchPattern.R_CASE_SENSITIVE;
 		var pattern = SearchPattern.createPattern(typeName, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS,
 			matchRule);
-		var scope = searchScope(projectName);
 		var types = new ArrayList<IType>();
-		new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
-			new SearchRequestor() {
-				public void acceptSearchMatch (SearchMatch match) {
-					if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t)
-						if (!t.isBinary()) types.add(t); // Source types only; isBinary is definitive (getResource can return the jar).
-				}
-			}, new NullProgressMonitor());
+		search(pattern, searchScope(projectName), sourceTypeCollector(types));
 		return types;
 	}
 
 	void java_members (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
-		String typeName = query.get("type");
-
-		if (typeName == null || typeName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: type");
-			return;
-		}
+		var p = new Params(exchange);
+		String projectName = p.get("project");
+		String typeName = p.require("type");
+		if (typeName == null) return;
 
 		var type = resolveTypeOrError(exchange, projectName, typeName);
 		if (type == null) return;
@@ -569,27 +528,19 @@ public class WebJDT extends WebServer {
 			json.pop();
 		}
 		json.pop();
-		var warning = fileErrorsWarning(type);
-		if (warning != null) json.set("warning", warning);
+		writeWarning(json, type);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
 
 	void java_method (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
-		String typeName = query.get("type");
-		String methodName = query.get("method");
-		String paramTypes = query.get("paramTypes");
-
-		if (typeName == null || typeName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: type");
-			return;
-		}
-		if (methodName == null || methodName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: method");
-			return;
-		}
+		var p = new Params(exchange);
+		String projectName = p.get("project");
+		String typeName = p.require("type");
+		if (typeName == null) return;
+		String methodName = p.require("method");
+		if (methodName == null) return;
+		String paramTypes = p.get("paramTypes");
 
 		var type = resolveTypeOrError(exchange, projectName, typeName);
 		if (type == null) return;
@@ -637,19 +588,18 @@ public class WebJDT extends WebServer {
 			json.array("supers");
 			for (var info : supers) {
 				json.object();
-				if (info.kind != null) json.set("kind", info.kind);
-				json.set("type", info.typeName);
-				json.set("method", info.methodName);
-				if (info.file != null) json.set("file", info.file);
-				if (info.startLine > 0) json.set("line", info.startLine);
-				if (info.endLine > 0) json.set("endLine", info.endLine);
-				json.set("source", info.source);
+				if (info.kind() != null) json.set("kind", info.kind());
+				json.set("type", info.typeName());
+				json.set("method", info.methodName());
+				if (info.file() != null) json.set("file", info.file());
+				if (info.startLine() > 0) json.set("line", info.startLine());
+				if (info.endLine() > 0) json.set("endLine", info.endLine());
+				json.set("source", info.source());
 				json.pop();
 			}
 			json.pop();
 		}
-		var warning = fileErrorsWarning(type);
-		if (warning != null) json.set("warning", warning);
+		writeWarning(json, type);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
@@ -737,11 +687,8 @@ public class WebJDT extends WebServer {
 		});
 
 		for (var entry : seen.entrySet()) {
-			var info = buildSuperInfo(entry.getValue());
-			if (info != null) {
-				info.kind = kinds.getOrDefault(entry.getKey(), "super");
-				results.add(info);
-			}
+			var info = buildSuperInfo(entry.getValue(), kinds.getOrDefault(entry.getKey(), "super"));
+			if (info != null) results.add(info);
 		}
 		return results;
 	}
@@ -776,7 +723,7 @@ public class WebJDT extends WebServer {
 		return null;
 	}
 
-	SuperMethodInfo buildSuperInfo (IMethodBinding binding) throws JavaModelException {
+	SuperMethodInfo buildSuperInfo (IMethodBinding binding, String kind) throws JavaModelException {
 		var element = binding.getJavaElement();
 		if (!(element instanceof IMethod superMethod)) return null;
 		var range = superMethod.getSourceRange();
@@ -797,22 +744,17 @@ public class WebJDT extends WebServer {
 			else if (root instanceof IClassFile) path = root.getPath().toOSString();
 		}
 
-		var info = new SuperMethodInfo();
-		info.typeName = declaring != null ? declaring.getFullyQualifiedName() : binding.getDeclaringClass().getQualifiedName();
-		info.methodName = superMethod.getElementName();
-		info.file = path;
+		String typeName = declaring != null ? declaring.getFullyQualifiedName() : binding.getDeclaringClass().getQualifiedName();
+		String methodName = superMethod.getElementName();
 		if (cuSource != null && range != null && range.getOffset() >= 0 && range.getLength() > 0) {
 			int startLine = lineNumber(cuSource, range.getOffset());
 			String src = cuSource.substring(range.getOffset(), range.getOffset() + range.getLength());
-			info.startLine = startLine;
-			info.endLine = startLine + src.split("\n", -1).length - 1;
-			info.source = src;
-		} else {
-			// No source available (e.g. binary with no attachment). Fall back to signature-only.
-			var src = superMethod.getSource();
-			info.source = src != null ? src : signatureString(superMethod);
+			int endLine = startLine + src.split("\n", -1).length - 1;
+			return new SuperMethodInfo(kind, typeName, methodName, path, startLine, endLine, src);
 		}
-		return info;
+		// No source available (e.g. binary with no attachment). Fall back to signature-only.
+		var src = superMethod.getSource();
+		return new SuperMethodInfo(kind, typeName, methodName, path, 0, 0, src != null ? src : signatureString(superMethod));
 	}
 
 	String signatureString (IMethod m) throws JavaModelException {
@@ -839,22 +781,15 @@ public class WebJDT extends WebServer {
 	}
 
 	void java_callers (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
-		String typeName = query.get("type");
-		String methodName = query.get("method");
-		String paramTypes = query.get("paramTypes");
-		int limit = intParam(query, "limit", defaultLimit);
-		boolean unlimited = "true".equals(query.get("unlimited"));
-
-		if (typeName == null || typeName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: type");
-			return;
-		}
-		if (methodName == null || methodName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: method");
-			return;
-		}
+		var p = new Params(exchange);
+		String projectName = p.get("project");
+		String typeName = p.require("type");
+		if (typeName == null) return;
+		String methodName = p.require("method");
+		if (methodName == null) return;
+		String paramTypes = p.get("paramTypes");
+		int limit = p.intOpt("limit", defaultLimit);
+		boolean unlimited = p.bool("unlimited");
 
 		var type = resolveTypeOrError(exchange, projectName, typeName);
 		if (type == null) return;
@@ -867,23 +802,16 @@ public class WebJDT extends WebServer {
 
 		var scope = searchScope(projectName);
 
-		// Per-overload search so each match is unambiguously attributed to one signature.
-		// callers across overloads, in declaration order; counts kept per overload (full counts, even when truncated).
+		// Per-overload search so each match is attributed to one signature. Counts are full counts even when truncated.
 		var overloadCounts = new LinkedHashMap<String, Integer>();
 		var callers = new ArrayList<CallerRow>();
 		for (var method : methods) {
 			String overloadKey = methodKey(method);
 			overloadCounts.putIfAbsent(overloadKey, 0);
-			var pattern = SearchPattern.createPattern(method, IJavaSearchConstants.REFERENCES);
 			var matches = new ArrayList<SearchMatch>();
-			new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
-				new SearchRequestor() {
-					public void acceptSearchMatch (SearchMatch match) {
-						if (match.getAccuracy() == SearchMatch.A_ACCURATE) matches.add(match);
-					}
-				}, new NullProgressMonitor());
+			search(SearchPattern.createPattern(method, IJavaSearchConstants.REFERENCES), scope, matchCollector(matches));
 
-			// Dedupe by file+line within this overload: a line like `foo(); foo();` produces two match offsets we collapse.
+			// Dedupe by file+line within this overload: `foo(); foo();` produces two offsets we collapse.
 			var seenFileLine = new LinkedHashSet<String>();
 			for (var match : matches) {
 				var resource = match.getResource();
@@ -893,16 +821,13 @@ public class WebJDT extends WebServer {
 				int line = source != null ? lineNumber(source, match.getOffset()) : 0;
 				if (line > 0 && !seenFileLine.add(fp + ":" + line)) continue;
 
-				var row = new CallerRow();
-				row.file = fp;
-				row.line = line;
-				row.context = source != null ? contextLine(source, match.getOffset()) : null;
+				String enclosingType = null, enclosingMethod = null;
 				if (match.getElement() instanceof IMethod caller) {
-					row.enclosingType = caller.getDeclaringType().getFullyQualifiedName();
-					row.enclosingMethod = caller.getElementName();
+					enclosingType = caller.getDeclaringType().getFullyQualifiedName();
+					enclosingMethod = caller.getElementName();
 				}
-				row.overload = overloadKey;
-				callers.add(row);
+				callers.add(new CallerRow(fp, line, source != null ? contextLine(source, match.getOffset()) : null, enclosingType,
+					enclosingMethod, overloadKey));
 				overloadCounts.merge(overloadKey, 1, Integer::sum);
 			}
 		}
@@ -922,12 +847,12 @@ public class WebJDT extends WebServer {
 			}
 			shown++;
 			json.object();
-			json.set("file", c.file);
-			if (c.enclosingType != null) json.set("enclosingType", c.enclosingType);
-			if (c.enclosingMethod != null) json.set("enclosingMethod", c.enclosingMethod);
-			if (c.line > 0) json.set("line", c.line);
-			if (c.context != null) json.set("context", c.context);
-			if (multipleOverloads) json.set("overload", c.overload);
+			json.set("file", c.file());
+			if (c.enclosingType() != null) json.set("enclosingType", c.enclosingType());
+			if (c.enclosingMethod() != null) json.set("enclosingMethod", c.enclosingMethod());
+			if (c.line() > 0) json.set("line", c.line());
+			if (c.context() != null) json.set("context", c.context());
+			if (multipleOverloads) json.set("overload", c.overload());
 			json.pop();
 		}
 		json.pop();
@@ -943,24 +868,14 @@ public class WebJDT extends WebServer {
 		}
 		json.set("total", total);
 		if (limited) json.set("limited", true);
-		var warning = fileErrorsWarning(type);
-		if (warning != null) json.set("warning", warning);
+		writeWarning(json, type);
 		json.pop();
 		exchange.responseJson(200, json.toString());
 	}
 
-	static class CallerRow {
-		String file;
-		int line;
-		String context;
-		String enclosingType;
-		String enclosingMethod;
-		String overload;
-	}
-
 	void java_resolve_type (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		var type = resolveTypeOrError(exchange, query.get("project"), query.get("type"));
+		var p = new Params(exchange);
+		var type = resolveTypeOrError(exchange, p.get("project"), p.get("type"));
 		if (type == null) return;
 		var resource = type.getResource();
 		var json = new Json();
@@ -978,15 +893,15 @@ public class WebJDT extends WebServer {
 	}
 
 	void java_organize_imports0 (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String filePath = query.get("file");
-		String typeName = query.get("type");
-		String resolveStr = query.get("resolve");
-		String preferStr = query.getOrDefault("prefer", "com.esotericsoftware,com.badlogic");
+		var p = new Params(exchange);
+		String filePath = p.get("file");
+		String typeName = p.get("type");
+		String resolveStr = p.get("resolve");
+		String preferStr = p.getOrDefault("prefer", "com.esotericsoftware,com.badlogic");
 
 		// Resolve type to file if provided.
-		if (typeName != null && !typeName.isEmpty()) {
-			var type = resolveTypeOrError(exchange, query.get("project"), typeName);
+		if (typeName != null) {
+			var type = resolveTypeOrError(exchange, p.get("project"), typeName);
 			if (type == null) return;
 			var resource = type.getResource();
 			if (resource == null) {
@@ -996,7 +911,7 @@ public class WebJDT extends WebServer {
 			filePath = filePath(resource);
 		}
 
-		if (filePath == null || filePath.isEmpty()) {
+		if (filePath == null) {
 			error(exchange, 400, "Missing parameter: file or type");
 			return;
 		}
@@ -1025,7 +940,7 @@ public class WebJDT extends WebServer {
 		}
 
 		var explicitResolve = new HashMap<String, String>();
-		if (resolveStr != null && !resolveStr.isEmpty()) {
+		if (resolveStr != null) {
 			for (var pair : resolveStr.split(",")) {
 				var kv = pair.split(":", 2);
 				if (kv.length == 2) explicitResolve.put(kv[0].trim(), kv[1].trim());
@@ -1053,90 +968,22 @@ public class WebJDT extends WebServer {
 		var conflict = conflicts.get(0);
 		String simpleName = conflict[0];
 
-		var candidates = new ArrayList<String>();
-		for (int i = 1; i < conflict.length; i++)
-			candidates.add(conflict[i]);
-
-		var working = new ArrayList<String>();
-
 		byte[] originalContent;
 		try (var in = ifile.getContents()) {
 			originalContent = in.readAllBytes();
 		}
 
-		for (var candidate : candidates) {
-			ifile.setContents(new ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
-			cu.getBuffer().setContents(new String(originalContent, UTF_8));
-
-			explicitResolve.put(simpleName, candidate);
-			var workingCopy = cu.getWorkingCopy(new NullProgressMonitor());
-			try {
-				var op = new OrganizeImportsOperation(workingCopy, null, true, false, true, (openChoices, ranges) -> {
-					var results = new TypeNameMatch[openChoices.length];
-					for (int i = 0; i < openChoices.length; i++) {
-						var choices = openChoices[i];
-						String name = choices[0].getSimpleTypeName();
-						if (explicitResolve.containsKey(name)) {
-							String wanted = explicitResolve.get(name);
-							for (var choice : choices)
-								if (choice.getFullyQualifiedName().equals(wanted)) {
-									results[i] = choice;
-									break;
-								}
-						}
-						if (results[i] == null) results[i] = choices[0];
-					}
-					return results;
-				});
-				op.run(new NullProgressMonitor());
-				workingCopy.commitWorkingCopy(true, new NullProgressMonitor());
-			} finally {
-				workingCopy.discardWorkingCopy();
-			}
-
-			ifile.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
-			Job.getJobManager().join(ResourcesPlugin.FAMILY_AUTO_BUILD, new NullProgressMonitor());
-			boolean hasErrors = false;
-			for (var m : ifile.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_ZERO))
-				if (m.getAttribute(IMarker.SEVERITY, -1) == IMarker.SEVERITY_ERROR) {
-					hasErrors = true;
-					break;
-				}
-
-			if (!hasErrors) {
+		var working = new ArrayList<String>();
+		for (int i = 1; i < conflict.length; i++) {
+			var candidate = conflict[i];
+			if (tryImportCandidate(ifile, cu, originalContent, explicitResolve, simpleName, candidate)) {
 				working.add(candidate);
 				if (working.size() > 1) break;
 			}
 		}
 
 		if (working.size() == 1) {
-			ifile.setContents(new ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
-			cu.getBuffer().setContents(new String(originalContent, UTF_8));
-			explicitResolve.put(simpleName, working.get(0));
-			var workingCopy2 = cu.getWorkingCopy(new NullProgressMonitor());
-			try {
-				var op2 = new OrganizeImportsOperation(workingCopy2, null, true, false, true, (openChoices, ranges) -> {
-					var results = new TypeNameMatch[openChoices.length];
-					for (int i = 0; i < openChoices.length; i++) {
-						var choices = openChoices[i];
-						String name = choices[0].getSimpleTypeName();
-						if (explicitResolve.containsKey(name)) {
-							String wanted = explicitResolve.get(name);
-							for (var choice : choices)
-								if (choice.getFullyQualifiedName().equals(wanted)) {
-									results[i] = choice;
-									break;
-								}
-						}
-						if (results[i] == null) results[i] = choices[0];
-					}
-					return results;
-				});
-				op2.run(new NullProgressMonitor());
-				workingCopy2.commitWorkingCopy(true, new NullProgressMonitor());
-			} finally {
-				workingCopy2.discardWorkingCopy();
-			}
+			tryImportCandidate(ifile, cu, originalContent, explicitResolve, simpleName, working.get(0));
 			respondOrganizeImports(exchange, true, null);
 		} else {
 			ifile.setContents(new ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
@@ -1145,14 +992,49 @@ public class WebJDT extends WebServer {
 		}
 	}
 
-	void java_classpath (Exchange exchange) throws Throwable {
-		var query = exchange.decodeQuery();
-		String projectsParam = query.get("projects");
+	/** Resets the file, sets explicitResolve[simpleName]=candidate, organizes imports, builds. Returns true if no errors after. */
+	boolean tryImportCandidate (IFile ifile, ICompilationUnit cu, byte[] originalContent, HashMap<String, String> explicitResolve,
+		String simpleName, String candidate) throws Exception {
+		ifile.setContents(new ByteArrayInputStream(originalContent), IResource.FORCE, new NullProgressMonitor());
+		cu.getBuffer().setContents(new String(originalContent, UTF_8));
+		explicitResolve.put(simpleName, candidate);
 
-		if (projectsParam == null || projectsParam.isEmpty()) {
-			error(exchange, 400, "Missing parameter: projects");
-			return;
+		var workingCopy = cu.getWorkingCopy(new NullProgressMonitor());
+		try {
+			var op = new OrganizeImportsOperation(workingCopy, null, true, false, true, (openChoices, ranges) -> {
+				var results = new TypeNameMatch[openChoices.length];
+				for (int i = 0; i < openChoices.length; i++) {
+					var choices = openChoices[i];
+					String name = choices[0].getSimpleTypeName();
+					if (explicitResolve.containsKey(name)) {
+						String wanted = explicitResolve.get(name);
+						for (var choice : choices)
+							if (choice.getFullyQualifiedName().equals(wanted)) {
+								results[i] = choice;
+								break;
+							}
+					}
+					if (results[i] == null) results[i] = choices[0];
+				}
+				return results;
+			});
+			op.run(new NullProgressMonitor());
+			workingCopy.commitWorkingCopy(true, new NullProgressMonitor());
+		} finally {
+			workingCopy.discardWorkingCopy();
 		}
+
+		ifile.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
+		Job.getJobManager().join(ResourcesPlugin.FAMILY_AUTO_BUILD, new NullProgressMonitor());
+		for (var m : ifile.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_ZERO))
+			if (m.getAttribute(IMarker.SEVERITY, -1) == IMarker.SEVERITY_ERROR) return false;
+		return true;
+	}
+
+	void java_classpath (Exchange exchange) throws Throwable {
+		var p = new Params(exchange);
+		String projectsParam = p.require("projects");
+		if (projectsParam == null) return;
 
 		var projectNames = new ArrayList<String>();
 		for (var token : projectsParam.split(",")) {
@@ -1219,10 +1101,10 @@ public class WebJDT extends WebServer {
 				requests.add(new String[] {entryLine.substring(0, tab), entryLine.substring(tab + 1)});
 			}
 		} else {
-			var query = exchange.decodeQuery();
-			String fp = query.get("file");
-			String linesStr = query.get("lines");
-			if (fp != null && !fp.isEmpty() && linesStr != null && !linesStr.isEmpty()) requests.add(new String[] {fp, linesStr});
+			var p = new Params(exchange);
+			String fp = p.get("file");
+			String linesStr = p.get("lines");
+			if (fp != null && linesStr != null) requests.add(new String[] {fp, linesStr});
 		}
 
 		var json = new Json();
@@ -1398,26 +1280,13 @@ public class WebJDT extends WebServer {
 			matchRule);
 		var scope = searchScope(projectName);
 		var types = new ArrayList<IType>();
-		new SearchEngine().search(pattern, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
-			new SearchRequestor() {
-				public void acceptSearchMatch (SearchMatch match) {
-					if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t)
-						if (!t.isBinary()) types.add(t); // Source types only; isBinary is definitive (getResource can return the jar).
-				}
-			}, new NullProgressMonitor());
+		search(pattern, scope, sourceTypeCollector(types));
 
-		// If the search found nothing, retry with '.' and '$' swapped so nested types work regardless
-		// of which separator the caller used ("Outer.Inner" vs "Outer$Inner").
+		// No hit: retry with '.' and '$' swapped so "Outer.Inner" and "Outer$Inner" are interchangeable.
 		if (types.isEmpty() && !hasWildcards && (typeName.indexOf('.') >= 0 || typeName.indexOf('$') >= 0)) {
 			String swapped = typeName.indexOf('$') >= 0 ? typeName.replace('$', '.') : typeName.replace('.', '$');
 			var alt = SearchPattern.createPattern(swapped, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS, matchRule);
-			new SearchEngine().search(alt, new SearchParticipant[] {SearchEngine.getDefaultSearchParticipant()}, scope,
-				new SearchRequestor() {
-					public void acceptSearchMatch (SearchMatch match) {
-						if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t)
-							if (!t.isBinary()) types.add(t);
-					}
-				}, new NullProgressMonitor());
+			search(alt, scope, sourceTypeCollector(types));
 		}
 
 		if (types.size() == 1) return types.get(0);
@@ -1585,41 +1454,108 @@ public class WebJDT extends WebServer {
 		return null;
 	}
 
-	void error (Exchange exchange, int code, String message) throws Exception {
+	static void error (Exchange exchange, int code, String message) throws Exception {
 		exchange.responseJson(code, "{\"error\":" + Json.quote(message) + "}");
 	}
 
-	/** Returns a warning string if the type's file has compile errors, null otherwise. Used by every type-aware endpoint so the
-	 * user is told when results may be incomplete or stale due to broken code rather than misreading an empty/degraded result as
-	 * authoritative. */
-	String fileErrorsWarning (IType type) throws Exception {
-		if (type == null) return null;
+	// ---- Query parameters ----
+
+	static class Params {
+		final Exchange exchange;
+		final HashMap<String, String> map;
+
+		Params (Exchange exchange) throws IOException {
+			this.exchange = exchange;
+			this.map = exchange.decodeQuery();
+		}
+
+		/** Null for missing or empty. */
+		String get (String name) {
+			var v = map.get(name);
+			return (v == null || v.isEmpty()) ? null : v;
+		}
+
+		String getOrDefault (String name, String defaultValue) {
+			var v = get(name);
+			return v != null ? v : defaultValue;
+		}
+
+		/** Sends 400 and returns null when missing. Caller must return if null. */
+		String require (String name) throws Exception {
+			var v = get(name);
+			if (v == null) error(exchange, 400, "Missing parameter: " + name);
+			return v;
+		}
+
+		int intOpt (String name, int defaultValue) {
+			var v = map.get(name);
+			if (v == null || v.isEmpty()) return defaultValue;
+			try {
+				return Integer.parseInt(v);
+			} catch (NumberFormatException e) {
+				return defaultValue;
+			}
+		}
+
+		boolean bool (String name) {
+			return "true".equals(map.get(name));
+		}
+	}
+
+	// ---- Search helpers ----
+
+	static final SearchParticipant[] PARTICIPANTS = {SearchEngine.getDefaultSearchParticipant()};
+
+	static void search (SearchPattern pattern, IJavaSearchScope scope, SearchRequestor requestor) throws CoreException {
+		new SearchEngine().search(pattern, PARTICIPANTS, scope, requestor, new NullProgressMonitor());
+	}
+
+	/** Collects accurate matches into the given list. */
+	static SearchRequestor matchCollector (ArrayList<SearchMatch> out) {
+		return new SearchRequestor() {
+			public void acceptSearchMatch (SearchMatch match) {
+				if (match.getAccuracy() == SearchMatch.A_ACCURATE) out.add(match);
+			}
+		};
+	}
+
+	/** Collects accurate source-type matches (binaries excluded). */
+	static SearchRequestor sourceTypeCollector (ArrayList<IType> out) {
+		return new SearchRequestor() {
+			public void acceptSearchMatch (SearchMatch match) {
+				if (match.getAccuracy() == SearchMatch.A_ACCURATE && match.getElement() instanceof IType t && !t.isBinary())
+					out.add(t);
+			}
+		};
+	}
+
+	// ---- Response helpers ----
+
+	static void writeLimited (Json json, int total, int limit, boolean unlimited) {
+		json.set("total", total);
+		if (!unlimited && total > limit) json.set("limited", true);
+	}
+
+	/** Writes a "warning" field when the type's file has compile errors. */
+	static void writeWarning (Json json, IType type) throws Exception {
+		if (type == null) return;
 		var resource = type.getResource();
-		if (resource == null) return null;
-		for (var marker : resource.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_ZERO)) {
-			if (marker.getAttribute(IMarker.SEVERITY, -1) == IMarker.SEVERITY_ERROR)
-				return "File has compile errors, results may be incomplete";
-		}
-		return null;
+		if (resource == null) return;
+		for (var marker : resource.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_ZERO))
+			if (marker.getAttribute(IMarker.SEVERITY, -1) == IMarker.SEVERITY_ERROR) {
+				json.set("warning", "File has compile errors, results may be incomplete");
+				return;
+			}
 	}
 
-	int intParam (HashMap<String, String> query, String name, int defaultValue) {
-		var val = query.get(name);
-		if (val == null || val.isEmpty()) return defaultValue;
-		try {
-			return Integer.parseInt(val);
-		} catch (NumberFormatException e) {
-			return defaultValue;
-		}
-	}
+	record CallerRow (String file, int line, String context, String enclosingType, String enclosingMethod, String overload) {}
 
-	static class SuperMethodInfo {
-		String kind; // "overrides" or "super"
-		String typeName;
-		String methodName;
-		String file;
-		int startLine;
-		int endLine;
-		String source;
-	}
+	record SuperMethodInfo (
+		String kind,
+		String typeName,
+		String methodName,
+		String file,
+		int startLine,
+		int endLine,
+		String source) {}
 }

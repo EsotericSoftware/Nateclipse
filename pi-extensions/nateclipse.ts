@@ -14,12 +14,93 @@ const GREP_CHUNK = 100;
 const TYPE_MAX = 200;
 const ORGANIZE_IMPORTS_MAX = 100;
 
+// ---- Styling ----
+
+type Style = {
+	white: (s: string) => string;
+	yellow: (s: string) => string;
+	green: (s: string) => string;
+	red: (s: string) => string;
+	accent: (s: string) => string;
+	lineNumber: (s: string) => string;
+	filePath: (s: string) => string;
+	dim: (s: string) => string;
+	tool: (s: string) => string;
+	javaCode: (s: string) => string;
+	paddedLine: (line: number | string, width: number) => string;
+	extra: (...args: Array<string | number | undefined | null>) => string;
+	withWarning: (text: string, warning?: string) => string;
+	applyCollapse: (text: string, expanded: boolean) => string;
+};
+
+function style(theme: any): Style {
+	const fg = (k: string, v: string) => theme.fg(k, v);
+	const bold = (v: string) => theme.bold(v);
+	const yellow = (v: string) => fg("warning", v);
+	const white = (v: string) => fg("toolTitle", bold(v));
+	return {
+		white,
+		yellow,
+		green: (v) => fg("success", bold(v)),
+		red: (v) => fg("error", bold(v)),
+		accent: (v) => fg("accent", v),
+		lineNumber: yellow,
+		filePath: (v) => fg("success", v),
+		dim: (v) => fg("dim", v),
+		tool: white,
+		javaCode: (code) => highlightCode(code.replace(/\r/g, ""), "java").join("\n"),
+		paddedLine: (line, width) => yellow(String(line).padStart(width)),
+		extra(...args) {
+			if (args.length == 1) {
+				const v = args[0];
+				return (v === undefined || v === null || v === "") ? "" : " " + yellow(String(v));
+			}
+			let text = "";
+			for (let i = 0; i < args.length; i += 2) {
+				const v = args[i + 1];
+				if (v === undefined || v === null || v === "") continue;
+				text += " " + yellow(args[i] + "=") + white(String(v));
+			}
+			return text;
+		},
+		withWarning: (text, warning) => warning ? fg("error", bold(warning)) + "\n" + text : text,
+		applyCollapse(text, expanded) {
+			if (expanded) return text;
+			const lines = text.split("\n");
+			if (lines.length <= 10) return text;
+			const remaining = lines.length - 10;
+			return lines.slice(0, 10).join("\n") + fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
+		},
+	};
+}
+
+const id = (s: string) => s;
+const plain: Style = {
+	white: id, yellow: id, green: id, red: id, accent: id,
+	lineNumber: id, filePath: id, dim: id, tool: id,
+	javaCode: (code) => code.replace(/\r/g, ""),
+	paddedLine: (line, width) => String(line).padStart(width),
+	extra(...args) {
+		if (args.length == 1) {
+			const v = args[0];
+			return (v === undefined || v === null || v === "") ? "" : " " + String(v);
+		}
+		let text = "";
+		for (let i = 0; i < args.length; i += 2) {
+			const v = args[i + 1];
+			if (v === undefined || v === null || v === "") continue;
+			text += " " + args[i] + "=" + String(v);
+		}
+		return text;
+	},
+	withWarning: (text, warning) => warning ? warning + "\n" + text : text,
+	applyCollapse: (text) => text,
+};
+
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 
-	// Run grep across many files in chunks to stay under Windows CreateProcess cmdline limits (~32KB).
-	// Chunks are processed by a bounded worker pool so large file sets don't serialize one process per chunk.
-	// Returned code is sticky: error (2) beats match (0) beats no-match (1).
+	// Chunked grep to stay under Windows cmdline limits (~32KB). Bounded worker pool, sticky exit code: error > match > no-match.
 	async function runGrepChunked(flagArgs: string[], pattern: string, files: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string; code: number }> {
 		const chunks: string[][] = [];
 		for (let i = 0; i < files.length; i += GREP_CHUNK) chunks.push(files.slice(i, i + GREP_CHUNK));
@@ -29,7 +110,7 @@ export default function (pi: ExtensionAPI) {
 			while (true) {
 				const idx = nextIdx++;
 				if (idx >= chunks.length) return;
-				// -H forces filename prefix so output is uniformly "file:line:content" regardless of batch size.
+				// -H forces filename prefix so output is uniformly "file:line:content".
 				results[idx] = await pi.exec("grep", [...flagArgs, "-H", pattern, ...chunks[idx]], { signal });
 			}
 		};
@@ -65,13 +146,13 @@ export default function (pi: ExtensionAPI) {
 			flags: Type.Optional(Type.String({ description: "Grep flags eg: -i -n -A3 -B2 -C5. Default: -n" })),
 			...optionalProject(),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_grep") + " " + accent(params.type) + extra("project", params.project) + extra(params.pattern) + " " + (params.flags || "-n");
+		renderCall(params, theme) {
+			const s = style(theme);
+			const text = s.tool("java_grep") + " " + s.accent(params.type) + s.extra("project", params.project) + s.extra(params.pattern) + " " + (params.flags || "-n");
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			// Multi-match /java_type responses are grouped as { file, types: [...] }. We only need files for grep, so no
-			// `lines=true` -- server skips buffer loads entirely in that path.
+			// Multi-match /java_type responses are grouped as { file, types: [...] }. Skip lines=true so server avoids buffer loads.
 			const typeData = await jdt("/java_type", { type: params.type, project: params.project }, signal);
 			if (typeData._error) throw new Error(`Type not found: ${params.type}`);
 			const matches = typeData.matches || [];
@@ -86,18 +167,14 @@ export default function (pi: ExtensionAPI) {
 			const flagStr = params.flags || "-n";
 			const flagArgs = flagStr.split(/\s+/).filter(Boolean);
 			const grepResult = await runGrepChunked(flagArgs, params.pattern, files, signal);
-			const output = grepResult.stdout.replace(/\r/g, "").trim(); // Strip CR (Windows grep may emit \r\n).
+			const output = grepResult.stdout.replace(/\r/g, "").trim();
 			if (!output) {
-				// Echo the command so the model sees exactly what ran.
 				const cmd = `grep ${flagArgs.join(" ")} ${JSON.stringify(params.pattern)}`.replace(/\s+/g, " ").trim();
 				let msg = `No matches for: ${cmd}`;
-				// List up to 3 searched files; truncate the rest with a count.
 				const MAX_FILES_SHOWN = 3;
 				for (const f of files.slice(0, MAX_FILES_SHOWN)) msg += `\n${f}`;
 				if (files.length > MAX_FILES_SHOWN) msg += `\n...+${files.length - MAX_FILES_SHOWN} more`;
-				// BRE footgun: `|` without -E/-P is a literal pipe, almost never intentional.
-				// `\|` is GNU BRE alternation, so don't warn when it's escaped.
-				// Short-option cluster like -E, -P, -nE, -iEn all contain E/P.
+				// BRE footgun: `|` without -E/-P is a literal pipe. `\|` is GNU BRE alternation so don't warn if escaped.
 				const hasExtended = flagArgs.some((f) =>
 					(f.startsWith("-") && !f.startsWith("--") && /[EP]/.test(f)) ||
 					f === "--extended-regexp" || f === "--perl-regexp"
@@ -112,14 +189,14 @@ export default function (pi: ExtensionAPI) {
 						msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
 					} else {
 						const err = (retry.stderr || "").replace(/\r/g, "").trim().split("\n")[0];
-						// grep exit 2 = error (bad regex), 1 = no match, 0 = match.
+						// grep exit 2 = error, 1 = no match, 0 = match.
 						if (retry.code === 2 && err) msg += `\nWith -E: ${err.replace(/^grep:\s*/, "")}`;
 						else msg += `\nWith -E: 0 matches`;
 					}
 				}
 				throw new Error(msg);
 			}
-			// Parse grep output. Match lines are "file:line:content", context lines (from -A/-B/-C) are "file-line-content", "--" separates groups.
+			// grep output: match lines are "file:line:content", context lines (-A/-B/-C) are "file-line-content", "--" separates groups.
 			const rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }> = [];
 			let matchCount = 0;
 			const perFile = new Map<string, number>();
@@ -128,7 +205,7 @@ export default function (pi: ExtensionAPI) {
 				const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
 				if (!m) continue;
 				rows.push({ file: m[1], line: parseInt(m[3]), content: m[4] });
-				if (m[2] === ":") { // `:` = match line; `-` = context line from -A/-B/-C.
+				if (m[2] === ":") { // `:` = match, `-` = context.
 					matchCount++;
 					perFile.set(m[1], (perFile.get(m[1]) || 0) + 1);
 				}
@@ -143,15 +220,16 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(msg);
 			}
 			await enrichEnclosing(rows, signal);
-			return result(formatGrep(rows, ctx.cwd, false), { rows, cwd: ctx.cwd });
+			return result(formatGrep(plain, rows, ctx.cwd), { rows, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Searching..."), 0, 0);
+		renderResult(r, { isPartial, expanded }, theme) {
+			const s = style(theme);
+			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
 			if (!r.details?.rows) {
 				const text = r.content[0]?.text || "No matches found.";
-				return new Text("\n" + applyCollapse(text, expanded), 0, 0);
+				return new Text("\n" + s.applyCollapse(text, expanded), 0, 0);
 			}
-			return new Text("\n" + applyCollapse(formatGrep(r.details.rows, r.details.cwd, true), expanded), 0, 0);
+			return new Text("\n" + s.applyCollapse(formatGrep(s, r.details.rows, r.details.cwd), expanded), 0, 0);
 		},
 	});
 
@@ -166,77 +244,26 @@ export default function (pi: ExtensionAPI) {
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			...optionalProject(),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_members") + " " + accent(params.type) + extra("project", params.project);
-			return new Text(text, 0, 0);
+		renderCall(params, theme) {
+			const s = style(theme);
+			return new Text(s.tool("java_members") + " " + s.accent(params.type) + s.extra("project", params.project), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_members", params, signal);
 			if (data._error) throw new Error(data._error + ": " + params.type);
 			const entries = data.entries || [];
-			if (!entries.length) {
-				const msg = data.warning || "Type has no members: " + params.type;
-				throw new Error(msg);
-			}
-			const parts: string[] = [];
-			for (let i = 0; i < entries.length; i++) {
-				const entry = entries[i];
-				if (i > 0) parts.push("");
-				const label = i === 0 ? "" : (entry.isInterface ? "Implements " : "Extends ");
-				let header = `${label}${entry.type}`;
-				if (entry.file) header += `  ${relPath(entry.file, ctx.cwd)}`;
-				parts.push(header);
-				if (entry.fields?.length) {
-					parts.push("Fields");
-					for (const f of entry.fields) {
-						const flags = f.flags ? f.flags + " " : "";
-						const line = f.line ? ` ${f.line}:` : " ";
-						parts.push(`${line} ${flags}${f.type} ${f.name}`);
-					}
-				}
-				if (entry.methods?.length) {
-					parts.push("Methods");
-					for (const m of entry.methods) {
-						const flags = m.flags ? m.flags + " " : "";
-						const ret = m.returnType ? m.returnType + " " : "";
-						const line = m.line ? ` ${m.line}:` : " ";
-						parts.push(`${line} ${flags}${ret}${m.name}(${m.parameters})`);
-					}
-				}
-			}
-			return result(withWarning(parts.join("\n"), data.warning), { data, cwd: ctx.cwd });
+			if (!entries.length) throw new Error(data.warning || "Type has no members: " + params.type);
+			return result(plain.withWarning(renderMembers(plain, entries, ctx.cwd), data.warning), { data, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Loading..."), 0, 0);
-			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Type not found."), 0, 0);
-			const entries = r.details.data.entries || [];
-			if (!entries.length) {
-				const msg = r.details.data.warning ? red(r.details.data.warning) : (r.content[0]?.text || "Type has no members.");
-				return new Text("\n" + msg, 0, 0);
-			}
-			const cwd = r.details.cwd;
-			const allMembers = entries.flatMap((e: any) => [...(e.fields || []), ...(e.methods || [])]);
-			const w = maxLineWidth(allMembers);
-			const parts: string[] = [];
-			for (let i = 0; i < entries.length; i++) {
-				const e = entries[i];
-				if (i > 0) parts.push("");
-				const label = i === 0 ? "" : (e.isInterface ? "Implements " : "Extends ");
-				let h = accent(`${label}${e.type}`);
-				if (e.file) h += "  " + filePath(relPath(e.file, cwd));
-				parts.push(h);
-				if (e.fields?.length) {
-					parts.push(accent("Fields"));
-					for (const f of e.fields)
-						parts.push(` ${f.line ? paddedLine(f.line, w) : " ".repeat(w)}  ` + javaCode(`${f.flags ? f.flags + " " : ""}${f.type} ${f.name}`));
+		renderResult(r, ctx, theme) {
+			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Type not found." }, (data, cwd, s) => {
+				const entries = data.entries || [];
+				if (!entries.length) {
+					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "Type has no members.");
+					return new Text("\n" + msg, 0, 0);
 				}
-				if (e.methods?.length) {
-					parts.push(accent("Methods"));
-					for (const m of e.methods)
-						parts.push(` ${m.line ? paddedLine(m.line, w) : " ".repeat(w)}  ` + javaCode(`${m.flags ? m.flags + " " : ""}${m.returnType ? m.returnType + " " : ""}${m.name}(${m.parameters})`));
-				}
-			}
-			return new Text("\n" + withWarningStyled(applyCollapse(parts.join("\n"), expanded), r.details.data.warning), 0, 0);
+				return renderMembers(s, entries, cwd);
+			});
 		},
 	});
 
@@ -255,31 +282,28 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ description: "Max lines of source when exactly one type matches. Default 500" })),
 			...optionalProject(),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_type") + " " + accent(params.type) + extra("project", params.project, "limit", params.limit);
-			return new Text(text, 0, 0);
+		renderCall(params, theme) {
+			const s = style(theme);
+			return new Text(s.tool("java_type") + " " + s.accent(params.type) + s.extra("project", params.project, "limit", params.limit), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			rejectBareWildcard("java_type", params.type, "Narrow the pattern");
-			// lines=true asks the server to include per-type line numbers in multi-match responses. This is only set
-			// for the java_type tool (not exposed to the model); callers that just want files (eg java_grep) skip it.
+			// lines=true asks server for per-type line numbers in multi-match responses. Only set by this tool.
 			const data = await jdt("/java_type", { ...params, lines: true }, signal);
 			if (data._error) throw new Error(data._error);
 			const rawMatches = data.matches || [];
 			if (rawMatches.length === 0) throw new Error("No matching types for: " + params.type);
-			// Single-match responses still carry `source`; leave them alone. Multi-match responses are grouped by file as
-			// { file, types: [...], lines: [...] } -- flatten back to per-type rows for the existing formatters.
+			// Single-match carries `source`; leave as-is. Multi-match is grouped { file, types: [], lines: [] } -- flatten to per-type rows.
 			if (rawMatches.length === 1 && rawMatches[0].source != null) {
 				const m = rawMatches[0];
-				const path = relPath(m.file, ctx.cwd);
-				const header = `${m.type}  ${path}:${m.line}-${m.endLine}`;
+				const header = `${m.type}  ${relPath(m.file, ctx.cwd)}:${m.line}-${m.endLine}`;
 				const parts = [header, m.source];
 				if (m.truncated) {
 					const shown = m.endLine - m.line + 1;
 					parts.push("");
 					parts.push(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
 				}
-				return result(withWarning(parts.join("\n"), data.warning), { single: m, warning: data.warning, cwd: ctx.cwd });
+				return result(plain.withWarning(parts.join("\n"), data.warning), { single: m, warning: data.warning, cwd: ctx.cwd });
 			}
 			const matches = rawMatches.flatMap((g: any) =>
 				(g.types || []).map((t: string, i: number) => ({ type: t, file: g.file, line: g.lines?.[i] }))
@@ -288,31 +312,29 @@ export default function (pi: ExtensionAPI) {
 				throw tooManyError(params.type, matches.length, TYPE_MAX, "types",
 					matches.map((m: any) => m.type), "Narrow the pattern");
 			}
-			const text = groupByFile(matches, ctx.cwd, (t) => {
-				let s = t.line ? `${t.line}` : " ";
-				s += `  ${t.type}`;
-				return s;
-			});
+			const text = groupByFile(plain, matches, ctx.cwd, (t) => (t.line ? `${t.line}` : " ") + `  ${t.type}`);
 			return result(text, { matches, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Searching..."), 0, 0);
+		renderResult(r, { isPartial, expanded }, theme) {
+			const s = style(theme);
+			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
 			if (r.details?.single) {
 				const m = r.details.single;
 				const cwd = r.details.cwd;
-				const header = accent(m.type) + "  " + filePath(relPath(m.file, cwd)) + lineNumber(`:${m.line}-${m.endLine}`);
-				const body = javaCode(stripIndent(m.source || ""));
+				const header = s.accent(m.type) + "  " + formatLocation(s, m.file, m.line, m.endLine, cwd);
+				const body = s.javaCode(stripIndent(m.source || ""));
 				let out = header + "\n" + body;
 				if (m.truncated) {
 					const shown = m.endLine - m.line + 1;
-					out += "\n" + yellow(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
+					out += "\n" + s.yellow(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
 				}
-				return new Text("\n" + withWarningStyled(applyCollapse(out, expanded), r.details.warning), 0, 0);
+				return new Text("\n" + s.withWarning(s.applyCollapse(out, expanded), r.details.warning), 0, 0);
 			}
 			if (!r.details?.matches) return new Text("\n" + (r.content[0]?.text || "No types found."), 0, 0);
 			const { matches, cwd } = r.details;
 			const w = maxLineWidth(matches);
-			return new Text("\n" + applyCollapse(renderGrouped(matches, cwd, (t) => (t.line ? paddedLine(t.line, w) + "  " : "") + accent(t.type)), expanded), 0, 0);
+			const body = groupByFile(s, matches, cwd, (t) => (t.line ? s.paddedLine(t.line, w) + "  " : "") + s.accent(t.type));
+			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});
 
@@ -329,47 +351,18 @@ export default function (pi: ExtensionAPI) {
 			paramTypes: Type.Optional(Type.String({ description: "Comma-separated param types for overloaded methods" })),
 			...optionalProject(),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_method") + type(params) + extra("project", params.project);
-			return new Text(text, 0, 0);
+		renderCall(params, theme) {
+			const s = style(theme);
+			return new Text(s.tool("java_method") + typeRef(s, params) + s.extra("project", params.project), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
 			if (data._error) throw new Error(data._error);
-			const locPlain = (file: string | undefined, line: number | undefined, endLine: number | undefined) =>
-				file ? `  ${relPath(file, ctx.cwd)}` + (line ? `:${line}` : "") + (endLine ? `-${endLine}` : "") : "";
-			const parts: string[] = [];
-			parts.push(`${data.type}#${data.method}` + locPlain(data.file, data.line, data.endLine));
-			parts.push(data.source);
-			if (Array.isArray(data.supers)) {
-				for (const s of data.supers) {
-					parts.push("");
-					const label = s.kind === "super" ? "Super" : "Overrides";
-					parts.push(`${label}: ${s.type}#${s.method}` + locPlain(s.file, s.line, s.endLine));
-					parts.push(s.source);
-				}
-			}
-			return result(withWarning(parts.join("\n"), data.warning), { data, cwd: ctx.cwd });
+			return result(plain.withWarning(renderMethod(plain, data, ctx.cwd), data.warning), { data, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Loading..."), 0, 0);
-			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Method not found."), 0, 0);
-			const { data, cwd } = r.details;
-			const renderBody = (file: string | undefined, line: number | undefined, endLine: number | undefined, src: string, prefix: string) => {
-				const loc = file ? filePath(relPath(file, cwd)) + (line ? lineNumber(":" + line + (endLine ? "-" + endLine : "")) : "") : "";
-				const header = prefix ? (loc ? prefix + "  " + loc : prefix) : loc;
-				return (header ? header + "\n" : "") + javaCode(stripIndent(src || ""));
-			};
-			const pieces: string[] = [];
-			pieces.push(renderBody(data.file, data.line, data.endLine, data.source, accent(data.type) + white("#") + data.method));
-			if (Array.isArray(data.supers)) {
-				for (const s of data.supers) {
-					pieces.push("");
-					const label = s.kind === "super" ? "Super" : "Overrides";
-					pieces.push(renderBody(s.file, s.line, s.endLine, s.source, accent(`${label}: ${s.type}`) + white("#") + s.method));
-				}
-			}
-			return new Text("\n" + withWarningStyled(applyCollapse(pieces.join("\n"), expanded), data.warning), 0, 0);
+		renderResult(r, ctx, theme) {
+			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Method not found." },
+				(data, cwd, s) => renderMethod(s, data, cwd));
 		},
 	});
 
@@ -385,9 +378,10 @@ export default function (pi: ExtensionAPI) {
 			type: Type.Optional(Type.String({ description: "Type name or pattern with * and ? wildcards. Resolves to file, overriding file parameter" })),
 			resolve: Type.Optional(Type.String({ description: "Explicit resolutions for ambiguous types eg: Array:com.badlogic.gdx.utils.Array,List:java.util.List" })),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_organize_imports") + " " + accent(params.type || params.file);
-			if (params.resolve) text += extra("resolve", params.resolve);
+		renderCall(params, theme) {
+			const s = style(theme);
+			let text = s.tool("java_organize_imports") + " " + s.accent(params.type || params.file);
+			if (params.resolve) text += s.extra("resolve", params.resolve);
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -417,16 +411,17 @@ export default function (pi: ExtensionAPI) {
 				lines.push(` ${c.type}: ${c.choices.join(", ")}`);
 			return result(lines.join("\n"), { data, conflicts: data.conflicts });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Organizing..."), 0, 0);
+		renderResult(r, { isPartial, expanded }, theme) {
+			const s = style(theme);
+			if (isPartial) return new Text("\n" + s.yellow("Organizing..."), 0, 0);
 			const text = r.content[0]?.text || "";
-			if (text === "Success") return new Text("\n" + green("Success."), 0, 0);
+			if (text === "Success") return new Text("\n" + s.green("Success."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + (text || "Not found."), 0, 0);
 			if (!r.details?.data.conflicts) return new Text("\n" + text, 0, 0);
-			const parts = [red("Ambiguous imports, call again with resolve parameter:")];
+			const parts = [s.red("Ambiguous imports, call again with resolve parameter:")];
 			for (const c of r.details.data.conflicts)
-				parts.push(`${accent(c.type)}: ${c.choices.join(", ")}`);
-			return new Text("\n" + applyCollapse(parts.join("\n"), expanded), 0, 0);
+				parts.push(`${s.accent(c.type)}: ${c.choices.join(", ")}`);
+			return new Text("\n" + s.applyCollapse(parts.join("\n"), expanded), 0, 0);
 		},
 	});
 
@@ -441,40 +436,41 @@ export default function (pi: ExtensionAPI) {
 			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_errors") + extra("project", params.project, "limit", params.limit);
-			return new Text(text, 0, 0);
+		renderCall(params, theme) {
+			const s = style(theme);
+			return new Text(s.tool("java_errors") + s.extra("project", params.project, "limit", params.limit), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_errors", params, signal);
 			if (data._error) throw new Error(data._error);
 			if (data.total === 0) return result("None");
 			await enrichEnclosing(data.errors, signal);
-			const text = groupByFile(data.errors, ctx.cwd, (e) => {
-				let s = `${e.line}`;
+			const text = groupByFile(plain, data.errors, ctx.cwd, (e) => {
+				let out = `${e.line}`;
 				const encl = enclosingLabel(e.enclosingType, e.enclosingMethod);
-				if (encl) s += `  ${encl}`;
-				s += `  ${e.severity}: ${e.message}`;
-				if (e.context) s += `\n${e.context}`;
-				return s;
+				if (encl) out += `  ${encl}`;
+				out += `  ${e.severity}: ${e.message}`;
+				if (e.context) out += `\n${e.context}`;
+				return out;
 			});
 			const suffix = data.limited ? `\n\nShowing ${data.errors.length} of ${data.total}\nUse limit for more` : "";
 			return result(text + suffix, { data, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Building..."), 0, 0);
+		renderResult(r, { isPartial, expanded }, theme) {
+			const s = style(theme);
+			if (isPartial) return new Text("\n" + s.yellow("Building..."), 0, 0);
 			const text = r.content[0]?.text || "";
-			if (text === "None") return new Text("\n" + green("No errors."), 0, 0);
+			if (text === "None") return new Text("\n" + s.green("No errors."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + text, 0, 0);
 			const { data, cwd } = r.details;
 			const w = maxLineWidth(data.errors);
-			const grouped = renderGrouped(data.errors, cwd, (e) => {
+			const body = groupByFile(s, data.errors, cwd, (e) => {
 				const severity = e.severity == "error" ? "Error" : "Warning";
 				const encl = enclosingLabel(e.enclosingType, e.enclosingMethod);
-				const enclPart = encl ? "  " + accent(encl) : "";
-				return paddedLine(e.line, w) + enclPart + "  " + red(`${severity}: ${e.message}`) + (e.context ? `\n${stripIndent(e.context)}` : "")
+				const enclPart = encl ? "  " + s.accent(encl) : "";
+				return s.paddedLine(e.line, w) + enclPart + "  " + s.red(`${severity}: ${e.message}`) + (e.context ? `\n${stripIndent(e.context)}` : "");
 			}, data.limited ? `Showing ${data.errors.length} of ${data.total}.` : undefined);
-			return new Text("\n" + applyCollapse(grouped, expanded), 0, 0);
+			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});
 
@@ -494,46 +490,29 @@ export default function (pi: ExtensionAPI) {
 			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_references") + type(params)
-				+ extra("project", params.project, "access", params.access, "limit", params.limit, "file", params.file);
-			return new Text(text, 0, 0);
+		renderCall(params, theme) {
+			const s = style(theme);
+			return new Text(s.tool("java_references") + typeRef(s, params)
+				+ s.extra("project", params.project, "access", params.access, "limit", params.limit, "file", params.file), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_references", params, signal);
 			if (data._error) throw new Error(data._error);
-			if (data.total === 0) {
-				const msg = data.warning || "No references for: " + typePlain(params);
-				throw new Error(msg);
-			}
-			const text = groupByFile(data.references, ctx.cwd, (r) => {
-				let s = `${r.line}`;
-				if (r.enclosingType) {
-					const simple = r.enclosingType.split(".").pop();
-					s += r.enclosingMethod ? `  ${simple}.${r.enclosingMethod}` : `  ${simple}`;
-				}
-				if (r.context) s += `  ${r.context}`;
-				return s;
-			});
+			if (data.total === 0) throw new Error(data.warning || "No references for: " + typePlain(params));
+			const text = groupByFile(plain, data.references, ctx.cwd, (r) => formatRefRowPlain(r));
 			const suffix = data.limited ? `\n\nShowing ${data.references.length} of ${data.total}\nUse limit for more` : "";
-			return result(withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd });
+			return result(plain.withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Searching..."), 0, 0);
-			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Type not found."), 0, 0);
-			if (r.details.data.total === 0) {
-				const msg = r.details.data.warning ? red(r.details.data.warning) : (r.content[0]?.text || "No references found.");
-				return new Text("\n" + msg, 0, 0);
-			}
-			const { data, cwd } = r.details;
-			const w = maxLineWidth(data.references);
-			const grouped = renderGrouped(data.references, cwd, (r) => {
-				let s = paddedLine(r.line, w);
-				if (r.enclosingType) s += "  " + accent(r.enclosingType.split(".").pop() + (r.enclosingMethod ? "." + r.enclosingMethod : ""));
-				if (r.context) s += "  " + r.context;
-				return s;
-			}, data.limited ? `Showing ${data.references.length} of ${data.total}.` : undefined);
-			return new Text("\n" + withWarningStyled(applyCollapse(grouped, expanded), data.warning), 0, 0);
+		renderResult(r, ctx, theme) {
+			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found." }, (data, cwd, s) => {
+				if (data.total === 0) {
+					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "No references found.");
+					return new Text("\n" + msg, 0, 0);
+				}
+				const w = maxLineWidth(data.references);
+				return groupByFile(s, data.references, cwd, (row) => formatRefRowStyled(s, row, w),
+					data.limited ? `Showing ${data.references.length} of ${data.total}.` : undefined);
+			});
 		},
 	});
 
@@ -552,42 +531,30 @@ export default function (pi: ExtensionAPI) {
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method eg: String,int" })),
 			...optionalProject(),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_hierarchy") + type(params);
-			if (params.direction && params.direction !== "all") text += extra("direction", params.direction);
-			text += extra("project", params.project);
+		renderCall(params, theme) {
+			const s = style(theme);
+			let text = s.tool("java_hierarchy") + typeRef(s, params);
+			if (params.direction && params.direction !== "all") text += s.extra("direction", params.direction);
+			text += s.extra("project", params.project);
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_hierarchy", params, signal);
 			if (data._error) throw new Error(data._error);
 			const types = data.types || [];
-			if (types.length === 0) {
-				const msg = data.warning || "No types in hierarchy for: " + typePlain(params);
-				throw new Error(msg);
-			}
-			const lines = types.map((t: any) => {
-				let s = t.type;
-				if (t.file) s += "  " + relPath(t.file, ctx.cwd) + (t.line ? `:${t.line}` : "");
-				return s;
-			});
-			return result(withWarning(lines.join("\n"), data.warning), { data, cwd: ctx.cwd });
+			if (types.length === 0) throw new Error(data.warning || "No types in hierarchy for: " + typePlain(params));
+			const lines = types.map((t: any) => t.type + (t.file ? "  " + relPath(t.file, ctx.cwd) + (t.line ? `:${t.line}` : "") : ""));
+			return result(plain.withWarning(lines.join("\n"), data.warning), { data, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Working..."), 0, 0);
-			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Type not found."), 0, 0);
-			const types = r.details.data.types || [];
-			if (types.length === 0) {
-				const msg = r.details.data.warning ? red(r.details.data.warning) : (r.content[0]?.text || "No types in hierarchy.");
-				return new Text("\n" + msg, 0, 0);
-			}
-			const cwd = r.details.cwd;
-			const text = types.map((t: any) => {
-				let s = accent(t.type);
-				if (t.file) s += "  " + filePath(relPath(t.file, cwd)) + (t.line ? lineNumber(":" + t.line) : "");
-				return s;
-			}).join("\n");
-			return new Text("\n" + withWarningStyled(applyCollapse(text, expanded), r.details.data.warning), 0, 0);
+		renderResult(r, ctx, theme) {
+			return jdtResult(r, ctx, theme, { loading: "Working...", notFound: "Type not found." }, (data, cwd, s) => {
+				const types = data.types || [];
+				if (types.length === 0) {
+					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "No types in hierarchy.");
+					return new Text("\n" + msg, 0, 0);
+				}
+				return types.map((t: any) => s.accent(t.type) + (t.file ? "  " + formatLocation(s, t.file, t.line, undefined, cwd) : "")).join("\n");
+			});
 		},
 	});
 
@@ -604,52 +571,33 @@ export default function (pi: ExtensionAPI) {
 			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_callers") + type(params) + extra("project", params.project, "limit", params.limit);
-			return new Text(text, 0, 0);
+		renderCall(params, theme) {
+			const s = style(theme);
+			return new Text(s.tool("java_callers") + typeRef(s, params) + s.extra("project", params.project, "limit", params.limit), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_callers", params, signal);
 			if (data._error) throw new Error(data._error);
-			if (data.total === 0) {
-				const msg = data.warning || "No callers for: " + typePlain(params);
-				throw new Error(msg);
-			}
-			const formatPlain = (r: any) => {
-				let s = `${r.line}`;
-				if (r.enclosingType) {
-					const simple = r.enclosingType.split(".").pop();
-					s += r.enclosingMethod ? `  ${simple}.${r.enclosingMethod}` : `  ${simple}`;
-				}
-				if (r.context) s += `  ${r.context}`;
-				return s;
-			};
+			if (data.total === 0) throw new Error(data.warning || "No callers for: " + typePlain(params));
 			const text = data.overloads && data.overloads.length > 1
-				? renderCallersByOverload(data.callers, data.overloads, ctx.cwd, formatPlain, false)
-				: groupByFile(data.callers, ctx.cwd, formatPlain);
+				? renderCallersByOverload(plain, data.callers, data.overloads, ctx.cwd, formatRefRowPlain)
+				: groupByFile(plain, data.callers, ctx.cwd, formatRefRowPlain);
 			const suffix = data.limited ? `\n\nShowing ${data.callers.length} of ${data.total}\nUse limit for more` : "";
-			return result(withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd });
+			return result(plain.withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd });
 		},
-		renderResult(r, { isPartial, expanded }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Searching..."), 0, 0);
-			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Type not found."), 0, 0);
-			if (r.details.data.total === 0) {
-				const msg = r.details.data.warning ? red(r.details.data.warning) : (r.content[0]?.text || "No callers found.");
-				return new Text("\n" + msg, 0, 0);
-			}
-			const { data, cwd } = r.details;
-			const w = maxLineWidth(data.callers);
-			const formatStyled = (r: any) => {
-				let s = paddedLine(r.line, w);
-				if (r.enclosingType) s += "  " + accent(r.enclosingType.split(".").pop() + (r.enclosingMethod ? "." + r.enclosingMethod : ""));
-				if (r.context) s += "  " + r.context;
-				return s;
-			};
-			const limitMsg = data.limited ? `Showing ${data.callers.length} of ${data.total}.` : undefined;
-			const grouped = data.overloads && data.overloads.length > 1
-				? renderCallersByOverload(data.callers, data.overloads, cwd, formatStyled, true, limitMsg)
-				: renderGrouped(data.callers, cwd, formatStyled, limitMsg);
-			return new Text("\n" + withWarningStyled(applyCollapse(grouped, expanded), data.warning), 0, 0);
+		renderResult(r, ctx, theme) {
+			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found." }, (data, cwd, s) => {
+				if (data.total === 0) {
+					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "No callers found.");
+					return new Text("\n" + msg, 0, 0);
+				}
+				const w = maxLineWidth(data.callers);
+				const format = (row: any) => formatRefRowStyled(s, row, w);
+				const limitMsg = data.limited ? `Showing ${data.callers.length} of ${data.total}.` : undefined;
+				return data.overloads && data.overloads.length > 1
+					? renderCallersByOverload(s, data.callers, data.overloads, cwd, format, limitMsg)
+					: groupByFile(s, data.callers, cwd, format, limitMsg);
+			});
 		},
 	});
 
@@ -661,30 +609,25 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			projects: Type.String({ description: "Comma-separated list of Eclipse project names to combine in order" }),
 		}),
-		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_classpath") + " " + accent(params.projects);
-			return new Text(text, 0, 0);
+		renderCall(params, theme) {
+			const s = style(theme);
+			return new Text(s.tool("java_classpath") + " " + s.accent(params.projects), 0, 0);
 		},
 		async execute(_id, params, signal) {
 			const data = await jdt("/java_classpath", params, signal);
 			if (data._error) throw new Error(data._error + " (" + params.projects + ")");
 			return result(data.file, { data });
 		},
-		renderResult(r, { isPartial }, theme) { _theme = theme;
-			if (isPartial) return new Text("\n" + yellow("Working..."), 0, 0);
+		renderResult(r, { isPartial }, theme) {
+			const s = style(theme);
+			if (isPartial) return new Text("\n" + s.yellow("Working..."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Project not found."), 0, 0);
-			return new Text("\n" + filePath(r.details.data.file), 0, 0);
+			return new Text("\n" + s.filePath(r.details.data.file), 0, 0);
 		},
 	});
 }
 
-function applyCollapse(text: string, expanded: boolean): string { // Matches read tool behavior.
-	if (expanded) return text;
-	const lines = text.split("\n");
-	if (lines.length <= 10) return text;
-	const remaining = lines.length - 10;
-	return lines.slice(0, 10).join("\n") + _theme.fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
-}
+// ---- HTTP ----
 
 async function jdt(path: string, params: Record<string, any>, signal?: AbortSignal, body?: string): Promise<any> {
 	const url = new URL(path, BASE);
@@ -715,7 +658,45 @@ async function jdt(path: string, params: Record<string, any>, signal?: AbortSign
 	return response.json();
 }
 
-function formatGrep(rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }>, cwd: string, styled: boolean): string {
+// One batched POST instead of one request per file. Body is line-oriented: "<filepath>\t<csv-lines>".
+async function enrichEnclosing(rows: Array<{ file: string; line: number; enclosingType?: string; enclosingMethod?: string }>, signal?: AbortSignal): Promise<void> {
+	const byFile = new Map<string, Set<number>>();
+	for (const r of rows) {
+		if (!byFile.has(r.file)) byFile.set(r.file, new Set());
+		byFile.get(r.file)!.add(r.line);
+	}
+	const lookup = new Map<string, { type?: string; method?: string }>();
+	const bodyLines: string[] = [];
+	for (const [file, lines] of byFile) bodyLines.push(`${file}\t${[...lines].join(",")}`);
+	try {
+		const data = await jdt("/java_enclosing", {}, signal, bodyLines.join("\n"));
+		if (!data?._error && Array.isArray(data?.enclosures)) {
+			for (const e of data.enclosures) lookup.set(`${e.file}:${e.line}`, { type: e.type, method: e.method });
+		}
+	} catch { /* best-effort */ }
+	for (const r of rows) {
+		const info = lookup.get(`${r.file}:${r.line}`);
+		if (info?.type) r.enclosingType = info.type;
+		if (info?.method) r.enclosingMethod = info.method;
+	}
+}
+
+// ---- Formatters ----
+
+function formatLocation(s: Style, file: string | undefined, line: number | undefined, endLine: number | undefined, cwd: string): string {
+	if (!file) return "";
+	const rel = s.filePath(relPath(file, cwd));
+	if (!line) return rel;
+	return rel + s.lineNumber(":" + line + (endLine ? "-" + endLine : ""));
+}
+
+function enclosingLabel(enclosingType: string | undefined, enclosingMethod: string | undefined): string {
+	if (!enclosingType) return "";
+	const simple = enclosingType.split(".").pop();
+	return enclosingMethod ? `${simple}.${enclosingMethod}` : simple!;
+}
+
+function formatGrep(s: Style, rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }>, cwd: string): string {
 	type Row = { line: number; content: string; enclosingType?: string; enclosingMethod?: string };
 	const byFile = new Map<string, Row[]>();
 	for (const r of rows) {
@@ -726,73 +707,41 @@ function formatGrep(rows: Array<{ file: string; line: number; content: string; e
 	for (const r of rows) w = Math.max(w, String(r.line).length);
 	const parts: string[] = [];
 	for (const [file, fileRows] of byFile) {
-		const rel = relPath(file, cwd);
-		parts.push(styled ? filePath(rel) : rel);
+		parts.push(s.filePath(relPath(file, cwd)));
 		for (const r of fileRows) {
-			const num = styled ? paddedLine(r.line, w) : String(r.line).padStart(w);
-			const body = styled ? javaCode(r.content) : r.content;
 			const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
-			const enclPart = encl ? (styled ? accent(encl) : encl) + "  " : "";
-			parts.push(num + "  " + enclPart + body);
+			const enclPart = encl ? s.accent(encl) + "  " : "";
+			parts.push(s.paddedLine(r.line, w) + "  " + enclPart + s.javaCode(r.content));
 		}
 	}
 	return parts.join("\n");
 }
 
-function enclosingLabel(enclosingType: string | undefined, enclosingMethod: string | undefined): string {
-	if (!enclosingType) return "";
-	const simple = enclosingType.split(".").pop();
-	return enclosingMethod ? `${simple}.${enclosingMethod}` : simple!;
-}
-
-async function enrichEnclosing(rows: Array<{ file: string; line: number; enclosingType?: string; enclosingMethod?: string }>, signal?: AbortSignal): Promise<void> {
-	const byFile = new Map<string, Set<number>>();
-	for (const r of rows) {
-		if (!byFile.has(r.file)) byFile.set(r.file, new Set());
-		byFile.get(r.file)!.add(r.line);
-	}
-	const lookup = new Map<string, { type?: string; method?: string }>();
-	// One batched POST instead of one request per file. Body is line-oriented to avoid a JSON parser on the server:
-	// each line is "<filepath>\t<csv-line-numbers>". Enclosures in the response are tagged with `file`.
-	const bodyLines: string[] = [];
-	for (const [file, lines] of byFile) bodyLines.push(`${file}\t${[...lines].join(",")}`);
-	try {
-		const data = await jdt("/java_enclosing", {}, signal, bodyLines.join("\n"));
-		if (!data?._error && Array.isArray(data?.enclosures)) {
-			for (const e of data.enclosures) lookup.set(`${e.file}:${e.line}`, { type: e.type, method: e.method });
-		}
-	} catch { /* enrichment is best-effort */ }
-	for (const r of rows) {
-		const info = lookup.get(`${r.file}:${r.line}`);
-		if (info?.type) r.enclosingType = info.type;
-		if (info?.method) r.enclosingMethod = info.method;
-	}
-}
-
-function groupByFile(data: any[], cwd: string, formatMatch: (r: any) => string): string {
+function groupByFile(s: Style, items: any[], cwd: string, formatItem: (r: any) => string, limitMsg?: string): string {
 	const byFile = new Map<string, string[]>();
-	for (const r of data) {
+	const projects = new Map<string, string | undefined>();
+	for (const r of items) {
 		const file = relPath(r.file, cwd);
-		const key = r.project ? `${r.project}  ${file}` : file;
-		if (!byFile.has(key)) byFile.set(key, []);
-		byFile.get(key)!.push(formatMatch(r));
+		if (!byFile.has(file)) { byFile.set(file, []); projects.set(file, r.project); }
+		byFile.get(file)!.push(formatItem(r));
 	}
 	const parts: string[] = [];
 	for (const [file, lines] of byFile) {
-		parts.push(file);
+		const proj = projects.get(file);
+		parts.push(proj ? s.accent(proj) + "  " + s.filePath(file) : s.filePath(file));
 		for (const line of lines) parts.push(line);
 	}
+	if (limitMsg) parts.push(s.dim(limitMsg));
 	return parts.join("\n");
 }
 
-// Groups callers by overload signature, then by file within each overload.
-// `overloads` lists ALL overloads with their full caller counts (which may exceed the displayed callers if truncated).
+// Groups callers by overload signature, then by file within each overload. `overloads` lists ALL with full counts (may exceed shown).
 function renderCallersByOverload(
+	s: Style,
 	callers: any[],
 	overloads: Array<{ signature: string; count: number }>,
 	cwd: string,
 	formatItem: (r: any) => string,
-	styled: boolean,
 	limitMsg?: string,
 ): string {
 	const byOverload = new Map<string, any[]>();
@@ -806,35 +755,98 @@ function renderCallersByOverload(
 	for (const o of overloads) {
 		const rows = byOverload.get(o.signature) || [];
 		const countLabel = `${o.count} caller${o.count === 1 ? "" : "s"}`;
-		const header = styled ? accent(o.signature) + "  " + _theme.fg("dim", countLabel) : `${o.signature}  ${countLabel}`;
+		const header = s.accent(o.signature) + "  " + s.dim(countLabel);
 		if (rows.length === 0) {
-			sections.push(header + (o.count > 0 ? (styled ? "  " + _theme.fg("dim", "(not shown)") : "  (not shown)") : ""));
+			sections.push(header + (o.count > 0 ? "  " + s.dim("(not shown)") : ""));
 			continue;
 		}
-		const body = styled ? renderGrouped(rows, cwd, formatItem) : groupByFile(rows, cwd, formatItem);
-		sections.push(header + "\n" + body);
+		sections.push(header + "\n" + groupByFile(s, rows, cwd, formatItem));
 	}
-	if (limitMsg) sections.push(styled ? _theme.fg("dim", limitMsg) : limitMsg);
+	if (limitMsg) sections.push(s.dim(limitMsg));
 	return sections.join("\n\n");
 }
 
-function renderGrouped(items: any[], cwd: string, formatItem: (r: any) => string, limitMsg?: string): string {
-	const byFile = new Map<string, string[]>();
-	const projects = new Map<string, string | undefined>();
-	for (const r of items) {
-		const file = relPath(r.file, cwd);
-		if (!byFile.has(file)) { byFile.set(file, []); projects.set(file, r.project); }
-		byFile.get(file)!.push(formatItem(r));
-	}
+function renderMembers(s: Style, entries: any[], cwd: string): string {
+	const allMembers = entries.flatMap((e: any) => [...(e.fields || []), ...(e.methods || [])]);
+	const w = maxLineWidth(allMembers);
 	const parts: string[] = [];
-	for (const [file, lines] of byFile) {
-		const proj = projects.get(file);
-		parts.push(proj ? accent(proj) + "  " + filePath(file) : filePath(file));
-		for (const line of lines) parts.push(line);
+	for (let i = 0; i < entries.length; i++) {
+		const e = entries[i];
+		if (i > 0) parts.push("");
+		const label = i === 0 ? "" : (e.isInterface ? "Implements " : "Extends ");
+		let h = s.accent(`${label}${e.type}`);
+		if (e.file) h += "  " + s.filePath(relPath(e.file, cwd));
+		parts.push(h);
+		const pad = (line: number | undefined) => line ? s.paddedLine(line, w) : " ".repeat(w);
+		if (e.fields?.length) {
+			parts.push(s.accent("Fields"));
+			for (const f of e.fields)
+				parts.push(` ${pad(f.line)}  ` + s.javaCode(`${f.flags ? f.flags + " " : ""}${f.type} ${f.name}`));
+		}
+		if (e.methods?.length) {
+			parts.push(s.accent("Methods"));
+			for (const m of e.methods)
+				parts.push(` ${pad(m.line)}  ` + s.javaCode(`${m.flags ? m.flags + " " : ""}${m.returnType ? m.returnType + " " : ""}${m.name}(${m.parameters})`));
+		}
 	}
-	if (limitMsg) parts.push(_theme.fg("dim", limitMsg));
 	return parts.join("\n");
 }
+
+function renderMethod(s: Style, data: any, cwd: string): string {
+	const body = (file: any, line: any, endLine: any, src: string, header: string) => {
+		const loc = formatLocation(s, file, line, endLine, cwd);
+		const full = header ? (loc ? header + "  " + loc : header) : loc;
+		return (full ? full + "\n" : "") + s.javaCode(stripIndent(src || ""));
+	};
+	const pieces: string[] = [];
+	pieces.push(body(data.file, data.line, data.endLine, data.source, s.accent(data.type) + s.white("#") + data.method));
+	if (Array.isArray(data.supers)) {
+		for (const sup of data.supers) {
+			pieces.push("");
+			const label = sup.kind === "super" ? "Super" : "Overrides";
+			pieces.push(body(sup.file, sup.line, sup.endLine, sup.source, s.accent(`${label}: ${sup.type}`) + s.white("#") + sup.method));
+		}
+	}
+	return pieces.join("\n");
+}
+
+function formatRefRowPlain(r: any): string {
+	let out = `${r.line}`;
+	const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
+	if (encl) out += `  ${encl}`;
+	if (r.context) out += `  ${r.context}`;
+	return out;
+}
+
+function formatRefRowStyled(s: Style, r: any, width: number): string {
+	let out = s.paddedLine(r.line, width);
+	const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
+	if (encl) out += "  " + s.accent(encl);
+	if (r.context) out += "  " + r.context;
+	return out;
+}
+
+function typeRef(s: Style, params: any): string {
+	let text = " " + s.accent(params.type);
+	const member = params.member || params.method;
+	if (member) {
+		text += s.white("#") + member;
+		if (params.paramTypes) text += s.javaCode("(" + params.paramTypes + ")");
+	}
+	return text;
+}
+
+function typePlain(params: any): string {
+	let text = params.type;
+	const member = params.member || params.method;
+	if (member) {
+		text += "#" + member;
+		if (params.paramTypes) text += "(" + params.paramTypes + ")";
+	}
+	return text;
+}
+
+// ---- Errors ----
 
 function rejectBareWildcard(toolName: string, pattern: string | undefined, advice: string): void {
 	const n = (pattern || "").trim();
@@ -848,85 +860,37 @@ function tooManyError(pattern: string, count: number, max: number, unit: string,
 	return new Error(`Too many matches for "${pattern}": ${count} ${unit}, max ${max}\n${shown}${more}\n${advice}`);
 }
 
-let _theme: any;
+// ---- Misc ----
 
-function white(text: string): string {
-	return _theme.fg("toolTitle", _theme.bold(text));
+/** Wraps the common renderResult pattern: partial -> loading; no data -> notFound; else render & wrap with warning+collapse.
+ *  The render callback may return a Text to bypass wrapping (for custom empty/error displays). */
+function jdtResult(
+	r: any,
+	{ isPartial, expanded }: { isPartial: boolean; expanded: boolean },
+	theme: any,
+	opts: { loading: string; notFound?: string },
+	render: (data: any, cwd: string, s: Style) => string | Text,
+): Text {
+	const s = style(theme);
+	if (isPartial) return new Text("\n" + s.yellow(opts.loading), 0, 0);
+	const data = r.details?.data;
+	if (!data) return new Text("\n" + (r.content[0]?.text || opts.notFound || "Not found."), 0, 0);
+	const body = render(data, r.details.cwd, s);
+	if (body instanceof Text) return body;
+	return new Text("\n" + s.withWarning(s.applyCollapse(body, expanded), data.warning), 0, 0);
 }
-function yellow(value: string): string {
-	return _theme.fg("warning", value);
-}
-function green(text: string): string {
-	return _theme.fg("success", _theme.bold(text));
-}
-function red(text: string): string {
-	return _theme.fg("error", _theme.bold(text));
-}
-function accent(value: string): string {
-	return _theme.fg("accent", value);
-}
-function lineNumber(value: string): string {
-	return yellow(value);
-}
-function filePath(value: string): string {
-	return _theme.fg("success", value);
-}
-function tool(text: string): string {
-	return white(text);
-}
-function type(params: any): string {
-	let text = " " + accent(params.type);
-	const member = params.member || params.method;
-	if (member) {
-		text += white("#") + member;
-		if (params.paramTypes) text += javaCode("(" + params.paramTypes + ")");
-	}
-	return text;
-}
-function typePlain(params: any): string {
-	let text = params.type;
-	const member = params.member || params.method;
-	if (member) {
-		text += "#" + member;
-		if (params.paramTypes) text += "(" + params.paramTypes + ")";
-	}
-	return text;
-}
-function extra(...args: Array<string | number | undefined | null>): string {
-	if (args.length == 1) {
-		const value = args[0];
-		if (value === undefined || value === null || value === "") return "";
-		return " " + yellow(String(value));
-	}
-	let text = "";
-	for (let i = 0; i < args.length; i += 2) {
-		const value = args[i + 1];
-		if (value === undefined || value === null || value === "") continue;
-		text += " " + yellow(args[i] + "=") + white(String(value));
-	}
-	return text;
-}
-function withWarning(text: string, warning: string | undefined): string {
-	return warning ? warning + "\n" + text : text;
-}
-function withWarningStyled(text: string, warning: string | undefined): string {
-	return warning ? red(warning) + "\n" + text : text;
-}
+
 function maxLineWidth(items: any[]): number {
 	let max = 0;
 	for (const item of items)
 		if (item.line) max = Math.max(max, String(item.line).length);
 	return max;
 }
-function paddedLine(line: number | string, width: number): string {
-	return lineNumber(String(line).padStart(width));
-}
+
 function result(text: string, details?: Record<string, any>) {
 	return { content: [{ type: "text" as const, text }], details: details || {} };
 }
-function javaCode(code: string): string {
-	return highlightCode(code.replace(/\r/g, ""), "java").join("\n");
-}
+
 function stripIndent(text: string): string {
 	text = text.replace(/\r/g, "");
 	const nl = text.indexOf("\n");
@@ -944,6 +908,7 @@ function stripIndent(text: string): string {
 	const stripped = lines.map(line => line.length >= min ? line.slice(min) : line).join("\n");
 	return text.slice(0, nl) + "\n" + stripped;
 }
+
 function relPath(absPath: string, cwd: string): string {
 	if (absPath.toLowerCase().startsWith(cwd.toLowerCase())) {
 		let rel = absPath.slice(cwd.length);
@@ -952,6 +917,7 @@ function relPath(absPath: string, cwd: string): string {
 	}
 	return absPath;
 }
+
 function optionalProject() {
 	return PROJECT_PARAMS ? { project: Type.Optional(Type.String({ description: "Eclipse project name" })) } : {};
 }
