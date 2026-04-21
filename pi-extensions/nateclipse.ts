@@ -6,13 +6,33 @@ import { Text } from "@mariozechner/pi-tui";
 
 const PORT = 9001;
 const BASE = `http://localhost:${PORT}`;
-const PROJECT_PARAMS = false; // Clanker narrows tool usage too often.
-const CAP_GREP = 300;
-const CAP_TYPE = 200;
-const CAP_ORGANIZE_IMPORTS = 100;
+const PROJECT_PARAMS = false; // Clanker narrows tool usage too often
+const GREP_MAX_FILES = 5000;
+const GREP_MAX_MATCHES = 500;
+const GREP_CHUNK = 250;
+const TYPE_MAX = 200;
+const ORGANIZE_IMPORTS_MAX = 100;
 
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
+
+	// Run grep across many files in chunks to stay under Windows CreateProcess cmdline limits (~32KB).
+	// Returned code is sticky: error (2) beats match (0) beats no-match (1).
+	async function runGrepChunked(flagArgs: string[], pattern: string, files: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string; code: number }> {
+		let stdout = "";
+		let stderr = "";
+		let code = 1;
+		for (let i = 0; i < files.length; i += GREP_CHUNK) {
+			const batch = files.slice(i, i + GREP_CHUNK);
+			// -H forces filename prefix so output is uniformly "file:line:content" regardless of batch size.
+			const r = await pi.exec("grep", [...flagArgs, "-H", pattern, ...batch], { signal });
+			stdout += r.stdout || "";
+			stderr += r.stderr || "";
+			if (r.code === 2) code = 2;
+			else if (r.code === 0 && code !== 2) code = 0;
+		}
+		return { stdout, stderr, code };
+	}
 
 	// ---- java_grep ----
 	pi.registerTool({
@@ -35,24 +55,21 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			rejectBareWildcard("java_grep", params.type, "Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
 			const typeData = await jdt("/java_type", { type: params.type, project: params.project }, signal);
 			if (typeData._error) throw new Error(`Type not found: ${params.type}`);
 			const matches = typeData.matches || [];
 			const files = [...new Set(matches.filter((t: any) => t.file).map((t: any) => t.file as string))];
 			if (files.length === 0) throw new Error(`Type not found: ${params.type}`);
-			if (files.length > CAP_GREP) {
-				throw tooManyError(params.type, files.length, CAP_GREP, "files",
+			if (files.length > GREP_MAX_FILES) {
+				throw tooManyError(params.type, files.length, GREP_MAX_FILES, "files",
 					matches.map((m: any) => m.type),
 					"Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
 			}
 
 			const flagStr = params.flags || "-n";
 			const flagArgs = flagStr.split(/\s+/).filter(Boolean);
-			// -H forces filename prefix so output is uniformly "file:line:content" (overrides any -h user passed; last wins in GNU grep).
-			const args = [...flagArgs, "-H", params.pattern, ...files];
-			const grepResult = await pi.exec("grep", args, { signal });
-			const output = (grepResult.stdout || "").replace(/\r/g, "").trim(); // Strip CR (Windows grep may emit \r\n).
+			const grepResult = await runGrepChunked(flagArgs, params.pattern, files, signal);
+			const output = grepResult.stdout.replace(/\r/g, "").trim(); // Strip CR (Windows grep may emit \r\n).
 			if (!output) {
 				// Echo the command so the model sees exactly what ran.
 				const cmd = `grep ${flagArgs.join(" ")} ${JSON.stringify(params.pattern)}`.replace(/\s+/g, " ").trim();
@@ -71,8 +88,8 @@ export default function (pi: ExtensionAPI) {
 				const hasUnescapedPipe = /(^|[^\\])\|/.test(params.pattern);
 				if (!hasExtended && hasUnescapedPipe) {
 					// Probe whether -E would have helped, so the model knows which way to go next.
-					const retry = await pi.exec("grep", ["-E", ...flagArgs, params.pattern, ...files], { signal });
-					const retryOut = (retry.stdout || "").replace(/\r/g, "").trim();
+					const retry = await runGrepChunked(["-E", ...flagArgs], params.pattern, files, signal);
+					const retryOut = retry.stdout.replace(/\r/g, "").trim();
 					if (retryOut) {
 						const n = retryOut.split("\n").filter((l) => l.length > 0).length;
 						msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
@@ -87,11 +104,26 @@ export default function (pi: ExtensionAPI) {
 			}
 			// Parse grep output. Match lines are "file:line:content", context lines (from -A/-B/-C) are "file-line-content", "--" separates groups.
 			const rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }> = [];
+			let matchCount = 0;
+			const perFile = new Map<string, number>();
 			for (const l of output.split("\n")) {
 				if (!l || l === "--") continue;
 				const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
 				if (!m) continue;
 				rows.push({ file: m[1], line: parseInt(m[3]), content: m[4] });
+				if (m[2] === ":") { // `:` = match line; `-` = context line from -A/-B/-C.
+					matchCount++;
+					perFile.set(m[1], (perFile.get(m[1]) || 0) + 1);
+				}
+			}
+			if (matchCount > GREP_MAX_MATCHES) {
+				const top = [...perFile.entries()].sort((a, b) => b[1] - a[1]);
+				const TOP_N = 5;
+				let msg = `Too many matches for "${params.pattern}": ${matchCount} matches, max ${GREP_MAX_MATCHES}`;
+				for (const [f, n] of top.slice(0, TOP_N)) msg += `\n  ${relPath(f, ctx.cwd)}  ${n}`;
+				if (top.length > TOP_N) msg += `\n  ...+${top.length - TOP_N} more files`;
+				msg += `\nNarrow the pattern, or restrict the file set with a more specific type.`;
+				throw new Error(msg);
 			}
 			await enrichEnclosing(rows, signal);
 			return result(formatGrep(rows, ctx.cwd, false), { rows, cwd: ctx.cwd });
@@ -216,8 +248,8 @@ export default function (pi: ExtensionAPI) {
 			if (data._error) throw new Error(data._error);
 			const matches = data.matches || [];
 			if (matches.length === 0) throw new Error("No matching types for: " + params.type);
-			if (matches.length > CAP_TYPE) {
-				throw tooManyError(params.type, matches.length, CAP_TYPE, "types",
+			if (matches.length > TYPE_MAX) {
+				throw tooManyError(params.type, matches.length, TYPE_MAX, "types",
 					matches.map((m: any) => m.type), "Narrow the pattern");
 			}
 			if (matches.length === 1 && matches[0].source != null) {
@@ -344,8 +376,8 @@ export default function (pi: ExtensionAPI) {
 				const typeMatches = typeData.matches || [];
 				const typeFiles = [...new Set(typeMatches.filter((t: any) => t.file).map((t: any) => t.file as string))];
 				if (typeFiles.length === 0) throw new Error(`Type not found: ${params.type}`);
-				if (typeFiles.length > CAP_ORGANIZE_IMPORTS) {
-					throw tooManyError(params.type, typeFiles.length, CAP_ORGANIZE_IMPORTS, "files",
+				if (typeFiles.length > ORGANIZE_IMPORTS_MAX) {
+					throw tooManyError(params.type, typeFiles.length, ORGANIZE_IMPORTS_MAX, "files",
 						typeMatches.map((m: any) => m.type),
 						"Narrow the pattern or target specific files, this tool writes to every match");
 				}
