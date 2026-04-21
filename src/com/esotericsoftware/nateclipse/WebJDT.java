@@ -1076,26 +1076,37 @@ public class WebJDT extends WebServer {
 
 	void java_classpath (Exchange exchange) throws Throwable {
 		var query = exchange.decodeQuery();
-		String projectName = query.get("project");
+		String projectsParam = query.get("projects");
 
-		if (projectName == null || projectName.isEmpty()) {
-			error(exchange, 400, "Missing parameter: project");
+		if (projectsParam == null || projectsParam.isEmpty()) {
+			error(exchange, 400, "Missing parameter: projects");
 			return;
 		}
 
-		var project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
-		if (!project.exists()) {
-			error(exchange, 404, "Project not found");
+		var projectNames = new ArrayList<String>();
+		for (var token : projectsParam.split(",")) {
+			var name = token.trim();
+			if (!name.isEmpty()) projectNames.add(name);
+		}
+		if (projectNames.isEmpty()) {
+			error(exchange, 400, "Missing parameter: projects");
 			return;
 		}
-
-		var javaProject = JavaCore.create(project);
-		var paths = JavaRuntime.computeDefaultRuntimeClassPath(javaProject);
 
 		var seen = new LinkedHashSet<String>();
-		for (var path : paths)
-			seen.add(path);
-		var file = File.createTempFile("classpath-" + projectName + "-", ".txt");
+		for (var projectName : projectNames) {
+			var project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
+			if (!project.exists()) {
+				error(exchange, 404, "Project not found: " + projectName);
+				return;
+			}
+			var javaProject = JavaCore.create(project);
+			var paths = JavaRuntime.computeDefaultRuntimeClassPath(javaProject);
+			for (var path : paths)
+				seen.add(path);
+		}
+
+		var file = File.createTempFile("cp-" + projectNames.get(0) + "-", ".txt");
 		file.deleteOnExit();
 		try (var writer = new FileWriter(file)) {
 			writer.write("-cp");

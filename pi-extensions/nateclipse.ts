@@ -594,17 +594,17 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "java_classpath",
 		label: "Java Classpath",
-		description: "Get classpath for a Java project and all dependencies. Use with bash java @file to run a Java main class in a project",
+		description: "Get classpath for one or more Java projects and all dependencies. Use with bash java @file to run a Java main class.",
 		parameters: Type.Object({
-			project: Type.String({ description: "Eclipse project name" }),
+			projects: Type.String({ description: "Comma-separated list of Eclipse project names to combine in order" }),
 		}),
 		renderCall(params, theme) { _theme = theme;
-			let text = tool("java_classpath") + " " + accent(params.project);
+			let text = tool("java_classpath") + " " + accent(params.projects);
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal) {
 			const data = await jdt("/java_classpath", params, signal);
-			if (data._error) throw new Error(data._error + ": " + params.project);
+			if (data._error) throw new Error(data._error + " (" + params.projects + ")");
 			return result(data.file, { data });
 		},
 		renderResult(r, { isPartial }, theme) { _theme = theme;
