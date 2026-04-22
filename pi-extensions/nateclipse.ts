@@ -10,6 +10,7 @@ const BASE = `http://localhost:${PORT}`;
 const PROJECT_PARAMS = false; // Clanker narrows tool usage too often
 const GREP_MAX_FILES = 5000;
 const GREP_MAX_MATCHES = 500;
+const GREP_MAX_LINE_LENGTH = 500;
 const GREP_CHUNK = 100;
 const TYPE_MAX = 200;
 const ORGANIZE_IMPORTS_MAX = 100;
@@ -52,6 +53,12 @@ export default function (pi: ExtensionAPI) {
 
 			const flagStr = params.flags || "-n";
 			const flagArgs = flagStr.split(/\s+/).filter(Boolean);
+			// Flags that change grep's output format so our "file:line:content" parser wouldn't apply.
+			// -l/-L: file list. -c: file:count. When present we capture raw stdout instead.
+			const rawMode = flagArgs.some((f) =>
+				(f.startsWith("-") && !f.startsWith("--") && /[lLc]/.test(f)) ||
+				f === "--files-with-matches" || f === "--files-without-match" || f === "--count",
+			);
 			const grepResult = await runGrepChunked(flagArgs, params.pattern, files, signal);
 			const output = grepResult.stdout.replace(/\r/g, "").trim();
 			if (!output) {
@@ -82,6 +89,22 @@ export default function (pi: ExtensionAPI) {
 				}
 				throw new Error(msg);
 			}
+			let linesTruncated = false;
+			if (rawMode) {
+				// -l/-L emit bare file paths; -c emits "file:count". Skip the structured parser.
+				const rawLines: string[] = [];
+				for (const l of output.split("\n")) {
+					if (!l) continue;
+					const { text: truncated, wasTruncated } = truncateLine(l);
+					if (wasTruncated) linesTruncated = true;
+					rawLines.push(truncated);
+				}
+				if (rawLines.length > GREP_MAX_MATCHES) {
+					throw new Error(`Too many matches for "${params.pattern}": ${rawLines.length} lines, max ${GREP_MAX_MATCHES}. Narrow the pattern, or restrict the file set with a more specific type.`);
+				}
+				const notices = linesTruncated ? `\n[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]` : "";
+				return result(formatRawGrep(plain, rawLines, ctx.cwd) + notices, { rawLines, rawMode: true, linesTruncated, cwd: ctx.cwd });
+			}
 			// grep output: match lines are "file:line:content", context lines (-A/-B/-C) are "file-line-content", "--" separates groups.
 			const rows: Array<{ file: string; line: number; content: string; isMatch: boolean; enclosingType?: string; enclosingMethod?: string }> = [];
 			let matchCount = 0;
@@ -91,7 +114,9 @@ export default function (pi: ExtensionAPI) {
 				const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
 				if (!m) continue;
 				const isMatch = m[2] === ":";
-				rows.push({ file: m[1], line: parseInt(m[3]), content: m[4], isMatch });
+				const { text: truncated, wasTruncated } = truncateLine(m[4]);
+				if (wasTruncated) linesTruncated = true;
+				rows.push({ file: m[1], line: parseInt(m[3]), content: truncated, isMatch });
 				if (isMatch) {
 					matchCount++;
 					perFile.set(m[1], (perFile.get(m[1]) || 0) + 1);
@@ -107,16 +132,21 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(msg);
 			}
 			await enrichEnclosing(rows, signal);
-			return result(formatGrep(plain, rows, ctx.cwd), { rows, cwd: ctx.cwd });
+			const notices = linesTruncated ? `\n[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]` : "";
+			return result(formatGrep(plain, rows, ctx.cwd) + notices, { rows, linesTruncated, cwd: ctx.cwd });
 		},
 		renderResult(r, { isPartial, expanded }, theme) {
 			const s = style(theme);
 			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
-			if (!r.details?.rows) {
+			if (!r.details || (!r.details.rows && !r.details.rawLines)) {
 				const text = r.content[0]?.text || "No matches found.";
 				return new Text("\n" + s.applyCollapse(text, expanded), 0, 0);
 			}
-			return new Text("\n" + s.applyCollapse(formatGrep(s, r.details.rows, r.details.cwd), expanded), 0, 0);
+			let body = r.details.rawMode
+				? formatRawGrep(s, r.details.rawLines, r.details.cwd)
+				: formatGrep(s, r.details.rows, r.details.cwd);
+			if (r.details.linesTruncated) body += "\n" + s.yellow(`[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]`);
+			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});
 
@@ -601,6 +631,22 @@ async function enrichEnclosing(rows: Array<{ file: string; line: number; enclosi
 }
 
 // ---- Formatters ----
+
+function truncateLine(s: string): { text: string; wasTruncated: boolean } {
+	const sanitized = s.replace(/\r/g, "");
+	if (sanitized.length <= GREP_MAX_LINE_LENGTH) return { text: sanitized, wasTruncated: false };
+	return { text: sanitized.slice(0, GREP_MAX_LINE_LENGTH) + "\u2026", wasTruncated: true };
+}
+
+// Used for -l/-L (file lists) and -c (file:count). Each raw line may start with a file path; relativize it.
+function formatRawGrep(s: Style, lines: string[], cwd: string): string {
+	return lines.map((line) => {
+		// -c format is "file:count"; split on the LAST trailing ":<digits>" so Windows drive letters ("C:/...") aren't mistaken for the separator.
+		const m = line.match(/^(.*):(\d+)$/);
+		if (m) return s.filePath(relPath(m[1], cwd)) + s.dim(":") + " " + s.yellow(m[2]);
+		return s.filePath(relPath(line, cwd));
+	}).join("\n");
+}
 
 function formatLocation(s: Style, file: string | undefined, line: number | undefined, endLine: number | undefined, cwd: string): string {
 	if (!file) return "";

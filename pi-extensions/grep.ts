@@ -54,16 +54,24 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const allFlags = [...autoFlags, ...userFlags];
-			const { rows, stderr, code, matchLimitReached, linesTruncated } = await runGrep(
+			// Flags that change grep's output format so our "file:line:content" parser wouldn't apply.
+			// -l/-L: file list. -c: file:count. When present we capture raw stdout instead.
+			const rawMode = userFlags.some((f) =>
+				(f.startsWith("-") && !f.startsWith("--") && /[lLc]/.test(f)) ||
+				f === "--files-with-matches" || f === "--files-without-match" || f === "--count",
+			);
+			const { rows, rawLines, stderr, code, matchLimitReached, linesTruncated } = await runGrep(
 				allFlags,
 				params.pattern,
 				searchPath,
 				MAX_MATCHES,
 				ctx.cwd,
+				rawMode,
 				signal,
 			);
 
-			if (rows.length === 0) {
+			const hasOutput = rawMode ? rawLines.length > 0 : rows.length > 0;
+			if (!hasOutput) {
 				const cmd = `grep ${allFlags.join(" ")} ${JSON.stringify(params.pattern)} ${searchPath}`.replace(/\s+/g, " ").trim();
 				let msg = `No matches for: ${cmd}`;
 				if (code === 2 && stderr) msg += `\n${stderr.trim().split("\n")[0].replace(/^grep:\s*/, "")}`;
@@ -75,9 +83,10 @@ export default function (pi: ExtensionAPI) {
 				);
 				const hasUnescapedPipe = /(^|[^\\])\|/.test(params.pattern);
 				if (code !== 2 && !hasExtended && hasUnescapedPipe) {
-					const retry = await runGrep(["-E", ...allFlags], params.pattern, searchPath, MAX_MATCHES, ctx.cwd, signal);
-					if (retry.rows.length > 0) {
-						msg += `\nWith -E: ${retry.rows.length} match${retry.rows.length === 1 ? "" : "es"}${retry.matchLimitReached ? "+" : ""}`;
+					const retry = await runGrep(["-E", ...allFlags], params.pattern, searchPath, MAX_MATCHES, ctx.cwd, rawMode, signal);
+					const retryCount = rawMode ? retry.rawLines.length : retry.rows.length;
+					if (retryCount > 0) {
+						msg += `\nWith -E: ${retryCount} match${retryCount === 1 ? "" : "es"}${retry.matchLimitReached ? "+" : ""}`;
 					} else if (retry.code === 2 && retry.stderr) {
 						msg += `\nWith -E: ${retry.stderr.trim().split("\n")[0].replace(/^grep:\s*/, "")}`;
 					} else {
@@ -88,9 +97,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const notices = buildNotices(matchLimitReached, linesTruncated);
-			const plainText = formatGrep(plain, rows, ctx.cwd) + (notices ? `\n[${notices}]` : "");
+			const body = rawMode
+				? formatRaw(plain, rawLines, ctx.cwd)
+				: formatGrep(plain, rows, ctx.cwd);
+			const plainText = body + (notices ? `\n[${notices}]` : "");
 			return result(plainText, {
 				rows,
+				rawLines,
+				rawMode,
 				cwd: ctx.cwd,
 				matchLimitReached,
 				linesTruncated,
@@ -99,11 +113,13 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial, expanded }, theme) {
 			const s = style(theme);
 			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
-			if (!r.details?.rows) {
+			if (!r.details || (!r.details.rows && !r.details.rawLines)) {
 				const text = r.content[0]?.text || "No matches found.";
 				return new Text("\n" + s.applyCollapse(text, expanded), 0, 0);
 			}
-			let body = formatGrep(s, r.details.rows, r.details.cwd);
+			let body = r.details.rawMode
+				? formatRaw(s, r.details.rawLines, r.details.cwd)
+				: formatGrep(s, r.details.rows, r.details.cwd);
 			const notices = buildNotices(r.details.matchLimitReached, r.details.linesTruncated);
 			if (notices) body += "\n" + s.yellow(`[${notices}]`);
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
@@ -121,8 +137,9 @@ async function runGrep(
 	searchPath: string,
 	limit: number,
 	cwd: string,
+	rawMode: boolean,
 	signal: AbortSignal | undefined,
-): Promise<{ rows: Row[]; stderr: string; code: number; matchLimitReached: boolean; linesTruncated: boolean }> {
+): Promise<{ rows: Row[]; rawLines: string[]; stderr: string; code: number; matchLimitReached: boolean; linesTruncated: boolean }> {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) { reject(new Error("Operation aborted")); return; }
 
@@ -131,6 +148,7 @@ async function runGrep(
 		const rl = createInterface({ input: child.stdout });
 
 		const rows: Row[] = [];
+		const rawLines: string[] = [];
 		let stderr = "";
 		let matchCount = 0;
 		let matchLimitReached = false;
@@ -146,6 +164,17 @@ async function runGrep(
 		rl.on("line", (line) => {
 			if (!line || line === "--") return;
 			if (matchLimitReached) return; // drop any in-flight rows after we signalled kill
+			if (rawMode) {
+				const { text: truncated, wasTruncated } = truncateLine(line);
+				if (wasTruncated) linesTruncated = true;
+				rawLines.push(truncated);
+				matchCount++;
+				if (matchCount >= limit) {
+					matchLimitReached = true;
+					if (!child.killed) { killedByLimit = true; child.kill(); }
+				}
+				return;
+			}
 			// `(.+?)([-:])(\d+)\2(.*)` — second occurrence of same separator after line number.
 			const m = line.match(/^(.+?)([-:])(\d+)\2(.*)$/);
 			if (!m) return;
@@ -172,7 +201,7 @@ async function runGrep(
 			if (aborted) { reject(new Error("Operation aborted")); return; }
 			// grep exit: 0 = match, 1 = no match, 2 = error.
 			const exit = killedByLimit ? 0 : (code ?? 1);
-			resolve({ rows, stderr: stderr.replace(/\r/g, ""), code: exit, matchLimitReached, linesTruncated });
+			resolve({ rows, rawLines, stderr: stderr.replace(/\r/g, ""), code: exit, matchLimitReached, linesTruncated });
 		});
 	});
 }
@@ -191,6 +220,25 @@ function truncateLine(s: string): { text: string; wasTruncated: boolean } {
 }
 
 // ---- formatting ----
+
+// Used for -l/-L (file lists) and -c (file:count). Each raw line may start with a file path; relativize it.
+// For -c we reformat "file:count" as "<count>  <file>" (count right-aligned) to match the grep match format
+// of "<line>  <content>".
+function formatRaw(s: Style, lines: string[], cwd: string): string {
+	// Parse once to learn max count width, then render.
+	const parsed = lines.map((line) => {
+		// Split on the LAST colon followed only by digits so Windows drive letters ("C:/...") are ignored.
+		const m = line.match(/^(.*):(\d+)$/);
+		return m ? { file: m[1], count: m[2] } : { file: line, count: undefined };
+	});
+	let w = 0;
+	for (const p of parsed) if (p.count) w = Math.max(w, p.count.length);
+	return parsed.map((p) =>
+		p.count
+			? s.paddedLine(p.count, w) + "  " + s.filePath(relPath(p.file, cwd))
+			: s.filePath(relPath(p.file, cwd)),
+	).join("\n");
+}
 
 function formatGrep(s: Style, rows: Row[], cwd: string): string {
 	const byFile = new Map<string, Row[]>();
