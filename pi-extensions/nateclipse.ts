@@ -14,89 +14,6 @@ const GREP_CHUNK = 100;
 const TYPE_MAX = 200;
 const ORGANIZE_IMPORTS_MAX = 100;
 
-// ---- Styling ----
-
-type Style = {
-	white: (s: string) => string;
-	yellow: (s: string) => string;
-	green: (s: string) => string;
-	red: (s: string) => string;
-	accent: (s: string) => string;
-	lineNumber: (s: string) => string;
-	filePath: (s: string) => string;
-	dim: (s: string) => string;
-	tool: (s: string) => string;
-	javaCode: (s: string) => string;
-	paddedLine: (line: number | string, width: number) => string;
-	extra: (...args: Array<string | number | undefined | null>) => string;
-	withWarning: (text: string, warning?: string) => string;
-	applyCollapse: (text: string, expanded: boolean) => string;
-};
-
-function style(theme: any): Style {
-	const fg = (k: string, v: string) => theme.fg(k, v);
-	const bold = (v: string) => theme.bold(v);
-	const yellow = (v: string) => fg("warning", v);
-	const white = (v: string) => fg("toolTitle", bold(v));
-	return {
-		white,
-		yellow,
-		green: (v) => fg("success", bold(v)),
-		red: (v) => fg("error", bold(v)),
-		accent: (v) => fg("accent", v),
-		lineNumber: yellow,
-		filePath: (v) => fg("success", v),
-		dim: (v) => fg("dim", v),
-		tool: white,
-		javaCode: (code) => highlightCode(code.replace(/\r/g, ""), "java").join("\n"),
-		paddedLine: (line, width) => yellow(String(line).padStart(width)),
-		extra(...args) {
-			if (args.length == 1) {
-				const v = args[0];
-				return (v === undefined || v === null || v === "") ? "" : " " + yellow(String(v));
-			}
-			let text = "";
-			for (let i = 0; i < args.length; i += 2) {
-				const v = args[i + 1];
-				if (v === undefined || v === null || v === "") continue;
-				text += " " + yellow(args[i] + "=") + white(String(v));
-			}
-			return text;
-		},
-		withWarning: (text, warning) => warning ? fg("error", bold(warning)) + "\n" + text : text,
-		applyCollapse(text, expanded) {
-			if (expanded) return text;
-			const lines = text.split("\n");
-			if (lines.length <= 10) return text;
-			const remaining = lines.length - 10;
-			return lines.slice(0, 10).join("\n") + fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
-		},
-	};
-}
-
-const id = (s: string) => s;
-const plain: Style = {
-	white: id, yellow: id, green: id, red: id, accent: id,
-	lineNumber: id, filePath: id, dim: id, tool: id,
-	javaCode: (code) => code.replace(/\r/g, ""),
-	paddedLine: (line, width) => String(line).padStart(width),
-	extra(...args) {
-		if (args.length == 1) {
-			const v = args[0];
-			return (v === undefined || v === null || v === "") ? "" : " " + String(v);
-		}
-		let text = "";
-		for (let i = 0; i < args.length; i += 2) {
-			const v = args[i + 1];
-			if (v === undefined || v === null || v === "") continue;
-			text += " " + args[i] + "=" + String(v);
-		}
-		return text;
-	},
-	withWarning: (text, warning) => warning ? warning + "\n" + text : text,
-	applyCollapse: (text) => text,
-};
-
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 
@@ -468,7 +385,7 @@ export default function (pi: ExtensionAPI) {
 				const severity = e.severity == "error" ? "Error" : "Warning";
 				const encl = enclosingLabel(e.enclosingType, e.enclosingMethod);
 				const enclPart = encl ? "  " + s.accent(encl) : "";
-				return s.paddedLine(e.line, w) + enclPart + "  " + s.red(`${severity}: ${e.message}`) + (e.context ? `\n${stripIndent(e.context)}` : "");
+				return s.paddedLine(e.line, w) + enclPart + "  " + s.red(`${severity}: ${e.message}`) + (e.context ? `\n${s.javaCode(stripIndent(e.context))}` : "");
 			}, data.limited ? `Showing ${data.errors.length} of ${data.total}.` : undefined);
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
@@ -822,7 +739,7 @@ function formatRefRowStyled(s: Style, r: any, width: number): string {
 	let out = s.paddedLine(r.line, width);
 	const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
 	if (encl) out += "  " + s.accent(encl);
-	if (r.context) out += "  " + r.context;
+	if (r.context) out += "  " + s.javaCode(r.context);
 	return out;
 }
 
@@ -921,3 +838,86 @@ function relPath(absPath: string, cwd: string): string {
 function optionalProject() {
 	return PROJECT_PARAMS ? { project: Type.Optional(Type.String({ description: "Eclipse project name" })) } : {};
 }
+
+// ---- Styling ----
+
+type Style = {
+	white: (s: string) => string;
+	yellow: (s: string) => string;
+	green: (s: string) => string;
+	red: (s: string) => string;
+	accent: (s: string) => string;
+	lineNumber: (s: string) => string;
+	filePath: (s: string) => string;
+	dim: (s: string) => string;
+	tool: (s: string) => string;
+	javaCode: (s: string) => string;
+	paddedLine: (line: number | string, width: number) => string;
+	extra: (...args: Array<string | number | undefined | null>) => string;
+	withWarning: (text: string, warning?: string) => string;
+	applyCollapse: (text: string, expanded: boolean) => string;
+};
+
+function style(theme: any): Style {
+	const fg = (k: string, v: string) => theme.fg(k, v);
+	const bold = (v: string) => theme.bold(v);
+	const yellow = (v: string) => fg("warning", v);
+	const white = (v: string) => fg("toolTitle", bold(v));
+	return {
+		white,
+		yellow,
+		green: (v) => fg("success", bold(v)),
+		red: (v) => fg("error", bold(v)),
+		accent: (v) => fg("accent", v),
+		lineNumber: yellow,
+		filePath: (v) => fg("success", v),
+		dim: (v) => fg("dim", v),
+		tool: white,
+		javaCode: (code) => highlightCode(code.replace(/\r/g, ""), "java").join("\n"),
+		paddedLine: (line, width) => yellow(String(line).padStart(width)),
+		extra(...args) {
+			if (args.length == 1) {
+				const v = args[0];
+				return (v === undefined || v === null || v === "") ? "" : " " + yellow(String(v));
+			}
+			let text = "";
+			for (let i = 0; i < args.length; i += 2) {
+				const v = args[i + 1];
+				if (v === undefined || v === null || v === "") continue;
+				text += " " + yellow(args[i] + "=") + white(String(v));
+			}
+			return text;
+		},
+		withWarning: (text, warning) => warning ? fg("error", bold(warning)) + "\n" + text : text,
+		applyCollapse(text, expanded) {
+			if (expanded) return text;
+			const lines = text.split("\n");
+			if (lines.length <= 10) return text;
+			const remaining = lines.length - 10;
+			return lines.slice(0, 10).join("\n") + fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
+		},
+	};
+}
+
+const id = (s: string) => s;
+const plain: Style = {
+	white: id, yellow: id, green: id, red: id, accent: id,
+	lineNumber: id, filePath: id, dim: id, tool: id,
+	javaCode: (code) => code.replace(/\r/g, ""),
+	paddedLine: (line, width) => String(line).padStart(width),
+	extra(...args) {
+		if (args.length == 1) {
+			const v = args[0];
+			return (v === undefined || v === null || v === "") ? "" : " " + String(v);
+		}
+		let text = "";
+		for (let i = 0; i < args.length; i += 2) {
+			const v = args[i + 1];
+			if (v === undefined || v === null || v === "") continue;
+			text += " " + args[i] + "=" + String(v);
+		}
+		return text;
+	},
+	withWarning: (text, warning) => warning ? warning + "\n" + text : text,
+	applyCollapse: (text) => text,
+};
