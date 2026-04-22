@@ -33,9 +33,13 @@ Tools provided:
 
 This extension improves the edit tool by providing context when edits fail:
 
-- When there is no match, returns a fuzzy match for context to save a turn.
+- When there are no matches, returns a fuzzy match for context to save a turn.
 - When edits fail due to multiple occurrences, returns minimal unique context to save a turn.
 - Prefixes `No edits made.` when edits fail to make it clear.
+
+### grep.ts
+
+This extension provides a grep tool. It gives nicer output than making the agent use bash grep, provides hints for recovery when there are no matches, and ignores `.git` and other folders. Agent usage matches bash grep, unlike Pi's grep tool (disabled by default) that has its own parameters.
 
 ## Completion sorting
 

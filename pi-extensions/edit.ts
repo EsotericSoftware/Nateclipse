@@ -4,7 +4,7 @@
 // - Prefixes `No edits made.` when edits fail to make it clear.
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createEditTool } from "@mariozechner/pi-coding-agent";
+import { createEditToolDefinition } from "@mariozechner/pi-coding-agent";
 
 import { readFile } from "fs/promises";
 import { resolve } from "path";
@@ -17,9 +17,19 @@ const PREVIEW_LEN = 40;
 
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
-	const originalEdit = createEditTool(cwd);
+	const original = createEditToolDefinition(cwd);
+	const originalRenderCall = original.renderCall;
+	const originalRenderResult = original.renderResult;
+
+	// Rewrite args.path to relative so the built-in renderers display the short form AND both renderers
+	// derive the same argsKey. If renderCall uses relative path but renderResult uses the original absolute
+	// path, their argsKeys diverge and setEditPreview reports "changed" on every render, causing an
+	// infinite invalidate loop.
+	const rewriteArgs = (args: any, cwd: string) =>
+		args?.path ? { ...args, path: relPath(args.path, cwd) } : args;
 
 	pi.registerTool({
+		...original,
 		name: "edit",
 		label: "edit",
 		promptSnippet: "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
@@ -31,10 +41,21 @@ export default function (pi: ExtensionAPI) {
 			"edits[].oldText matches against the original file, not after earlier edits[] are applied",
 			"Keep edits[].oldText as small as possible while still being unique in the file, do not pad with large unchanged text",
 		],
-		parameters: originalEdit.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
+		renderCall: originalRenderCall
+			? (params, theme, context) => {
+				const relParams = rewriteArgs(params, context.cwd);
+				return originalRenderCall(relParams, theme, { ...context, args: relParams });
+			}
+			: undefined,
+		renderResult: originalRenderResult
+			? (result, options, theme, context) => {
+				const relArgs = rewriteArgs(context.args, context.cwd);
+				return originalRenderResult(result, options, theme, { ...context, args: relArgs });
+			}
+			: undefined,
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			try {
-				return await originalEdit.execute(toolCallId, params, signal, onUpdate);
+				return await original.execute(toolCallId, params, signal, onUpdate, ctx);
 			} catch (err: any) {
 				const msg = err?.message ?? String(err);
 				// Underlying tool throws on ambiguous matches; enrich with locations.
@@ -49,6 +70,18 @@ export default function (pi: ExtensionAPI) {
 }
 
 /** Find every occurrence of `needle` in `haystack`, returning 1-based line numbers. */
+function relPath(absPath: string, cwd: string): string {
+	// Normalize separators for comparison; Windows Node gives backslashes in cwd, callers often pass forward slashes.
+	const a = absPath.replace(/\\/g, "/");
+	const c = cwd.replace(/\\/g, "/");
+	if (a.toLowerCase().startsWith(c.toLowerCase())) {
+		let rel = a.slice(c.length);
+		if (rel[0] === "/") rel = rel.slice(1);
+		return rel || a;
+	}
+	return a;
+}
+
 function findLineNumbers(haystack: string, needle: string): number[] {
 	const lines: number[] = [];
 	let from = 0;

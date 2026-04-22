@@ -17,36 +17,6 @@ const ORGANIZE_IMPORTS_MAX = 100;
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 
-	// Chunked grep to stay under Windows cmdline limits (~32KB). Bounded worker pool, sticky exit code: error > match > no-match.
-	async function runGrepChunked(flagArgs: string[], pattern: string, files: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string; code: number }> {
-		const chunks: string[][] = [];
-		for (let i = 0; i < files.length; i += GREP_CHUNK) chunks.push(files.slice(i, i + GREP_CHUNK));
-		const results: Array<{ stdout: string; stderr: string; code: number }> = new Array(chunks.length);
-		let nextIdx = 0;
-		const worker = async () => {
-			while (true) {
-				const idx = nextIdx++;
-				if (idx >= chunks.length) return;
-				// -H forces filename prefix so output is uniformly "file:line:content".
-				results[idx] = await pi.exec("grep", [...flagArgs, "-H", pattern, ...chunks[idx]], { signal });
-			}
-		};
-		const maxThreads = Math.max(2, os.cpus().length - 1);
-		const n = Math.min(maxThreads, chunks.length);
-		await Promise.all(Array.from({ length: n }, worker));
-		let stdout = "";
-		let stderr = "";
-		let code = 1;
-		for (const r of results) {
-			if (!r) continue;
-			stdout += r.stdout || "";
-			stderr += r.stderr || "";
-			if (r.code === 2) code = 2;
-			else if (r.code === 0 && code !== 2) code = 0;
-		}
-		return { stdout, stderr, code };
-	}
-
 	// ---- java_grep ----
 	pi.registerTool({
 		name: "java_grep",
@@ -55,18 +25,17 @@ export default function (pi: ExtensionAPI) {
 		description: "Resolves type to file, then runs grep. All grep flags supported. Specify -E if using |",
 		promptGuidelines: [
 			"The java_* tools are aware of types, references, hierarchies. Use them over bash/grep/find for Java source",
-			"Use java_grep instead of bash grep to find text in Java source",
+			"Use java_grep instead of grep to find text in Java source",
 		],
 		parameters: Type.Object({
-			type: Type.String({ description: "Type name or pattern with * and ? wildcards to grep multiple files" }),
 			pattern: Type.String({ description: "Grep pattern" }),
+			type: Type.String({ description: "Type name or pattern with * and ? wildcards to grep multiple files" }),
 			flags: Type.Optional(Type.String({ description: "Grep flags eg: -i -n -A3 -B2 -C5. Default: -n" })),
 			...optionalProject(),
 		}),
 		renderCall(params, theme) {
 			const s = style(theme);
-			const text = s.tool("java_grep") + " " + s.accent(params.type) + s.extra("project", params.project) + s.extra(params.pattern) + " " + (params.flags || "-n");
-			return new Text(text, 0, 0);
+			return new Text(s.tool("java_grep") + " " + s.yellow(params.pattern) + " " + s.accent(params.type) + s.extra("project", params.project) + " " + s.yellow(params.flags || "-n"), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			// Multi-match /java_type responses are grouped as { file, types: [...] }. Skip lines=true so server avoids buffer loads.
@@ -114,15 +83,16 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(msg);
 			}
 			// grep output: match lines are "file:line:content", context lines (-A/-B/-C) are "file-line-content", "--" separates groups.
-			const rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }> = [];
+			const rows: Array<{ file: string; line: number; content: string; isMatch: boolean; enclosingType?: string; enclosingMethod?: string }> = [];
 			let matchCount = 0;
 			const perFile = new Map<string, number>();
 			for (const l of output.split("\n")) {
 				if (!l || l === "--") continue;
 				const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
 				if (!m) continue;
-				rows.push({ file: m[1], line: parseInt(m[3]), content: m[4] });
-				if (m[2] === ":") { // `:` = match, `-` = context.
+				const isMatch = m[2] === ":";
+				rows.push({ file: m[1], line: parseInt(m[3]), content: m[4], isMatch });
+				if (isMatch) {
 					matchCount++;
 					perFile.set(m[1], (perFile.get(m[1]) || 0) + 1);
 				}
@@ -149,6 +119,36 @@ export default function (pi: ExtensionAPI) {
 			return new Text("\n" + s.applyCollapse(formatGrep(s, r.details.rows, r.details.cwd), expanded), 0, 0);
 		},
 	});
+
+	// Chunked grep to stay under Windows cmdline limits (~32KB). Bounded worker pool, sticky exit code: error > match > no-match.
+	async function runGrepChunked(flagArgs: string[], pattern: string, files: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string; code: number }> {
+		const chunks: string[][] = [];
+		for (let i = 0; i < files.length; i += GREP_CHUNK) chunks.push(files.slice(i, i + GREP_CHUNK));
+		const results: Array<{ stdout: string; stderr: string; code: number }> = new Array(chunks.length);
+		let nextIdx = 0;
+		const worker = async () => {
+			while (true) {
+				const idx = nextIdx++;
+				if (idx >= chunks.length) return;
+				// -H forces filename prefix so output is uniformly "file:line:content".
+				results[idx] = await pi.exec("grep", [...flagArgs, "-H", pattern, ...chunks[idx]], { signal });
+			}
+		};
+		const maxThreads = Math.max(2, os.cpus().length - 1);
+		const n = Math.min(maxThreads, chunks.length);
+		await Promise.all(Array.from({ length: n }, worker));
+		let stdout = "";
+		let stderr = "";
+		let code = 1;
+		for (const r of results) {
+			if (!r) continue;
+			stdout += r.stdout || "";
+			stderr += r.stderr || "";
+			if (r.code === 2) code = 2;
+			else if (r.code === 0 && code !== 2) code = 0;
+		}
+		return { stdout, stderr, code };
+	}
 
 	// ---- java_members ----
 	pi.registerTool({
@@ -295,9 +295,10 @@ export default function (pi: ExtensionAPI) {
 			type: Type.Optional(Type.String({ description: "Type name or pattern with * and ? wildcards. Resolves to file, overriding file parameter" })),
 			resolve: Type.Optional(Type.String({ description: "Explicit resolutions for ambiguous types eg: Array:com.badlogic.gdx.utils.Array,List:java.util.List" })),
 		}),
-		renderCall(params, theme) {
+		renderCall(params, theme, context) {
 			const s = style(theme);
-			let text = s.tool("java_organize_imports") + " " + s.accent(params.type || params.file);
+			const scope = params.type || (params.file ? relPath(params.file, context.cwd) : "");
+			let text = s.tool("java_organize_imports") + " " + s.accent(scope);
 			if (params.resolve) text += s.extra("resolve", params.resolve);
 			return new Text(text, 0, 0);
 		},
@@ -397,7 +398,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Java References",
 		promptSnippet: "Show usage of a Java field (read/write), method, or type",
 		description: "Shows enclosing method name for each reference. Can filter to specific paths",
-		promptGuidelines: ["Use java_references instead of bash grep to find references field reads/writes"],
+		promptGuidelines: ["Use java_references instead of grep to find references field reads/writes"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			member: Type.Optional(Type.String({ description: "Method or field. Omit to find references to the type" })),
@@ -407,10 +408,11 @@ export default function (pi: ExtensionAPI) {
 			...optionalProject(),
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
-		renderCall(params, theme) {
+		renderCall(params, theme, context) {
 			const s = style(theme);
+			const file = params.file ? relPath(params.file, context.cwd) : undefined;
 			return new Text(s.tool("java_references") + typeRef(s, params)
-				+ s.extra("project", params.project, "access", params.access, "limit", params.limit, "file", params.file), 0, 0);
+				+ s.extra("project", params.project, "access", params.access, "limit", params.limit, "file", file), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_references", params, signal);
@@ -613,12 +615,12 @@ function enclosingLabel(enclosingType: string | undefined, enclosingMethod: stri
 	return enclosingMethod ? `${simple}.${enclosingMethod}` : simple!;
 }
 
-function formatGrep(s: Style, rows: Array<{ file: string; line: number; content: string; enclosingType?: string; enclosingMethod?: string }>, cwd: string): string {
-	type Row = { line: number; content: string; enclosingType?: string; enclosingMethod?: string };
+function formatGrep(s: Style, rows: Array<{ file: string; line: number; content: string; isMatch?: boolean; enclosingType?: string; enclosingMethod?: string }>, cwd: string): string {
+	type Row = { line: number; content: string; isMatch?: boolean; enclosingType?: string; enclosingMethod?: string };
 	const byFile = new Map<string, Row[]>();
 	for (const r of rows) {
 		if (!byFile.has(r.file)) byFile.set(r.file, []);
-		byFile.get(r.file)!.push({ line: r.line, content: r.content, enclosingType: r.enclosingType, enclosingMethod: r.enclosingMethod });
+		byFile.get(r.file)!.push({ line: r.line, content: r.content, isMatch: r.isMatch, enclosingType: r.enclosingType, enclosingMethod: r.enclosingMethod });
 	}
 	let w = 0;
 	for (const r of rows) w = Math.max(w, String(r.line).length);
@@ -626,9 +628,15 @@ function formatGrep(s: Style, rows: Array<{ file: string; line: number; content:
 	for (const [file, fileRows] of byFile) {
 		parts.push(s.filePath(relPath(file, cwd)));
 		for (const r of fileRows) {
-			const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
-			const enclPart = encl ? s.accent(encl) + "  " : "";
-			parts.push(s.paddedLine(r.line, w) + "  " + enclPart + s.javaCode(r.content));
+			// Context lines (-A/-B/-C) render dim with no enclosing label; the match line above already shows it.
+			const isContext = r.isMatch === false;
+			if (isContext) {
+				parts.push(s.paddedLine(r.line, w) + "  " + s.dim(r.content));
+			} else {
+				const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
+				const enclPart = encl ? s.accent(encl) + "  " : "";
+				parts.push(s.paddedLine(r.line, w) + "  " + enclPart + s.javaCode(r.content));
+			}
 		}
 	}
 	return parts.join("\n");
@@ -827,12 +835,15 @@ function stripIndent(text: string): string {
 }
 
 function relPath(absPath: string, cwd: string): string {
-	if (absPath.toLowerCase().startsWith(cwd.toLowerCase())) {
-		let rel = absPath.slice(cwd.length);
-		if (rel[0] === "/" || rel[0] === "\\") rel = rel.slice(1);
-		return rel;
+	// Normalize separators for comparison; Windows Node gives backslashes in cwd, callers often pass forward slashes.
+	const a = absPath.replace(/\\/g, "/");
+	const c = cwd.replace(/\\/g, "/");
+	if (a.toLowerCase().startsWith(c.toLowerCase())) {
+		let rel = a.slice(c.length);
+		if (rel[0] === "/") rel = rel.slice(1);
+		return rel || a;
 	}
-	return absPath;
+	return a;
 }
 
 function optionalProject() {
