@@ -37,14 +37,6 @@ This extension improves the edit tool by providing context when edits fail:
 - When edits fail due to multiple occurrences, returns minimal unique context to save a turn.
 - Prefixes `No edits made.` when edits fail to make it clear.
 
-### json-fix.ts
-
-Some LLM APIs give literal tabs and other bad data in their JSON response, stopping the agent. This extension allows the agent to recover when the agent stops due to this error:
-
-```
-Error: Bad control character in string literal in JSON at position 123
-```
-
 ## Completion sorting
 
 Eclipse seems to sort completions randomly. This plugin makes it smarter by tracking your most recently used types and projects. Types defined in the same file and project are preferred, and other reasonable logic. The types you are likely to choose appear higher in the list, just imagine.
