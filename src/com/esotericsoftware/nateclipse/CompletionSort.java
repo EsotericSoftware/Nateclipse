@@ -11,7 +11,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.Platform;
+import org.eclipse.jdt.core.Flags;
 import org.eclipse.jdt.core.ICompilationUnit;
+import org.eclipse.jdt.core.IImportDeclaration;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IPackageDeclaration;
 import org.eclipse.jdt.core.IType;
@@ -28,6 +30,7 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
  * <ol>
  * <li>Templates (eg {@code sout} -> {@code System.out.println()}) come first.
  * <li>Types declared in the current compilation unit come next.
+ * <li>Then types already imported by the current compilation unit (explicit imports beat wildcards).
  * <li>Then types in the same package, same project, other workspace projects.
  * <li>Then workspace JARs.
  * <li>Then commonly-used JDK types, then the rest of the JDK.
@@ -71,6 +74,8 @@ public class CompletionSort extends AbstractProposalSorter {
 	private String activeProject;
 	private String activePackage;
 	private Set<String> currentCuTypes = Collections.emptySet();
+	private Set<String> importedTypes = Collections.emptySet();
+	private Set<String> importedPackages = Collections.emptySet();
 
 	/** Proposal identity -> computed score. Reset per sorting pass. */
 	private final Map<ICompletionProposal, Integer> scoreCache = new HashMap<>();
@@ -81,6 +86,8 @@ public class CompletionSort extends AbstractProposalSorter {
 		activeProject = null;
 		activePackage = null;
 		currentCuTypes = Collections.emptySet();
+		importedTypes = Collections.emptySet();
+		importedPackages = Collections.emptySet();
 		try {
 			if (context instanceof JavaContentAssistInvocationContext jc) {
 				IJavaProject project = jc.getProject();
@@ -92,10 +99,42 @@ public class CompletionSort extends AbstractProposalSorter {
 					Set<String> fqns = new HashSet<>();
 					collectTypes(cu.getTypes(), fqns);
 					currentCuTypes = fqns;
+					Set<String> impTypes = new HashSet<>();
+					Set<String> impPkgs = new HashSet<>();
+					collectImports(cu.getImports(), impTypes, impPkgs);
+					importedTypes = impTypes;
+					importedPackages = impPkgs;
 				}
 			}
 		} catch (Exception ex) {
 			log.error("SmartProposalSorter.beginSorting failed", ex);
+		}
+	}
+
+	static private void collectImports (IImportDeclaration[] imports, Set<String> types, Set<String> packages)
+		throws org.eclipse.jdt.core.JavaModelException {
+		for (IImportDeclaration imp : imports) {
+			String name = imp.getElementName();
+			if (name == null || name.isEmpty()) continue;
+			boolean onDemand = imp.isOnDemand();
+			boolean isStatic = Flags.isStatic(imp.getFlags());
+			if (isStatic) {
+				// `import static a.b.C.*;` -> element name is the type C.
+				// `import static a.b.C.member;` -> strip trailing segment to get the type.
+				if (onDemand) {
+					types.add(name);
+				} else {
+					int dot = name.lastIndexOf('.');
+					if (dot > 0) types.add(name.substring(0, dot));
+				}
+			} else {
+				// `import a.b.*;` -> element name is the package.
+				// `import a.b.C;` -> element name is the type.
+				if (onDemand)
+					packages.add(name);
+				else
+					types.add(name);
+			}
 		}
 	}
 
@@ -112,6 +151,8 @@ public class CompletionSort extends AbstractProposalSorter {
 		activeProject = null;
 		activePackage = null;
 		currentCuTypes = Collections.emptySet();
+		importedTypes = Collections.emptySet();
+		importedPackages = Collections.emptySet();
 	}
 
 	@Override
@@ -146,7 +187,8 @@ public class CompletionSort extends AbstractProposalSorter {
 			score = null;
 		} else {
 			Classification c = TypeRanking.classify(fqn);
-			score = Integer.valueOf(TypeRanking.scoreForCompletion(c, activeProject, activePackage, currentCuTypes));
+			score = Integer.valueOf(
+				TypeRanking.scoreForCompletion(c, activeProject, activePackage, currentCuTypes, importedTypes, importedPackages));
 		}
 		scoreCache.put(p, score);
 		return score;

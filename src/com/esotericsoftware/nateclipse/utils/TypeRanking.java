@@ -35,6 +35,7 @@ public class TypeRanking {
 	// Content assist: same idea, but also prefer types declared in the current CU,
 	// allow JDK types to appear above non-type proposals by giving them a non-trivial floor.
 	static public final int CA_CURRENT_CU = 100_000;
+	static public final int CA_IMPORTED = 95_000;
 	static public final int CA_SAME_PACKAGE = 90_000;
 	static public final int CA_SAME_PROJECT = 80_000;
 	static public final int CA_WORKSPACE = 70_000;
@@ -105,7 +106,11 @@ public class TypeRanking {
 		"java.time.LocalDate", //
 		"java.time.LocalDateTime", //
 		"java.time.Instant", //
-		"java.time.Duration" //
+		"java.time.Duration", //
+		"com.badlogic.gdx.utils.Null", //
+		"com.badlogic.gdx.utils.Array", //
+		"com.badlogic.gdx.utils.ObjectMap", //
+		"com.badlogic.gdx.files.FileHandle" //
 	);
 
 	// ----- Classification -----
@@ -216,9 +221,10 @@ public class TypeRanking {
 		}
 	}
 
-	/** Score for content assist. Higher = earlier. {@code currentCuTypes} may be empty. */
-	static public int scoreForCompletion (Classification c, String activeProject, String activePackage,
-		Set<String> currentCuTypes) {
+	/** Score for content assist. Higher = earlier. Any of {@code currentCuTypes}, {@code importedTypes}, {@code importedPackages}
+	 * may be null or empty. */
+	static public int scoreForCompletion (Classification c, String activeProject, String activePackage, Set<String> currentCuTypes,
+		Set<String> importedTypes, Set<String> importedPackages) {
 		if (c == null) return CA_JDK - 5_000;
 		MruTracker mru = MruTracker.get();
 		int typeRank = mru.getTypeRank(c.fqn);
@@ -226,6 +232,24 @@ public class TypeRanking {
 
 		// Types declared in the current compilation unit always win.
 		if (currentCuTypes != null && currentCuTypes.contains(c.fqn)) return CA_CURRENT_CU;
+
+		// Types already imported in the current compilation unit (explicit or on-demand) come next.
+		if (c.fqn != null) {
+			if (importedTypes != null && importedTypes.contains(c.fqn)) {
+				int base = CA_IMPORTED;
+				if (typeRank >= 0) base += MruTracker.MAX_TYPES - typeRank;
+				return base;
+			}
+			if (importedPackages != null && !importedPackages.isEmpty()) {
+				int dot = c.fqn.lastIndexOf('.');
+				String candidatePkg = dot > 0 ? c.fqn.substring(0, dot) : "";
+				if (importedPackages.contains(candidatePkg)) {
+					int base = CA_IMPORTED - 1_000; // exact import beats on-demand
+					if (typeRank >= 0) base += MruTracker.MAX_TYPES - typeRank;
+					return base;
+				}
+			}
+		}
 
 		// Same package beats same project.
 		if (c.origin == Origin.WORKSPACE_SOURCE && activeProject != null && activeProject.equals(c.projectName)) {

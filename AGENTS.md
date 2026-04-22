@@ -1,8 +1,9 @@
 # Eclipse plugin
 
-- `TabLabelModifier` Tab label cleanup
 - `WebJDT` HTTP server exposing JDT functionality.
-- Pi extension `pi-extensions/nateclipse.ts` providing tools that hit WebJDT.
+- Pi extension `pi-extensions/nateclipse.ts` providing tools that hit WebJDT and other utilities.
+- `CompletionSort` Improved completion and open type sorting
+- `TabLabels` Tab label cleanup
 
 Don't use java_* tools, they can't find Nateclipse classes because those are in a workspace for plugin development, not in the main workspace that runs WebJDT.
 
