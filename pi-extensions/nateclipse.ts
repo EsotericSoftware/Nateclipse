@@ -269,7 +269,14 @@ export default function (pi: ExtensionAPI) {
 				const m = r.details.single;
 				const cwd = r.details.cwd;
 				const header = s.accent(m.type) + "  " + formatLocation(s, m.file, m.line, m.endLine, cwd);
-				const body = s.javaCode(stripIndent(m.source || ""));
+				const rendered = s.javaCode(stripIndent(m.source || ""));
+				const body = m.line
+					? (() => {
+						const lines = rendered.split("\n");
+						const w = String(m.line + lines.length - 1).length;
+						return lines.map((ln, i) => s.paddedLine(m.line + i, w) + "  " + ln).join("\n");
+					})()
+					: rendered;
 				let out = header + "\n" + body;
 				if (m.truncated) {
 					const shown = m.endLine - m.line + 1;
@@ -309,7 +316,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, ctx, theme) {
 			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Method not found." },
-				(data, cwd, s) => renderMethod(s, data, cwd));
+				(data, cwd, s) => renderMethod(s, data, cwd, true));
 		},
 	});
 
@@ -763,11 +770,22 @@ function renderMembers(s: Style, entries: any[], cwd: string): string {
 	return parts.join("\n");
 }
 
-function renderMethod(s: Style, data: any, cwd: string): string {
+function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean = false): string {
+	// Width is shared across the method body and any super/override sections so line numbers align.
+	let w = 0;
+	if (showLineNumbers) {
+		const collect = (d: any) => { if (d?.line) w = Math.max(w, String(d.endLine || d.line).length); };
+		collect(data);
+		if (Array.isArray(data.supers)) for (const sup of data.supers) collect(sup);
+	}
 	const body = (file: any, line: any, endLine: any, src: string, header: string) => {
 		const loc = formatLocation(s, file, line, endLine, cwd);
 		const full = header ? (loc ? header + "  " + loc : header) : loc;
-		return (full ? full + "\n" : "") + s.javaCode(stripIndent(src || ""));
+		const rendered = s.javaCode(stripIndent(src || ""));
+		const numbered = showLineNumbers && line
+			? rendered.split("\n").map((ln, i) => s.paddedLine(line + i, w) + "  " + ln).join("\n")
+			: rendered;
+		return (full ? full + "\n" : "") + numbered;
 	};
 	const pieces: string[] = [];
 	pieces.push(body(data.file, data.line, data.endLine, data.source, s.accent(data.type) + s.white("#") + data.method));
