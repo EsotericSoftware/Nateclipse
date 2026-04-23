@@ -3,7 +3,7 @@
 // - Each output line prefixed with a right-padded 1-based line number ("  42  text"), offset-aware.
 // Behavior (execute) is the default, only rendering is overridden.
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ReadToolDetails, Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { createReadToolDefinition, getLanguageFromPath, highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
@@ -12,7 +12,7 @@ export default function (pi: ExtensionAPI) {
 	const original = createReadToolDefinition(cwd);
 	const originalRenderResult = original.renderResult;
 
-	pi.registerTool({
+	pi.registerTool<typeof original.parameters, ReadToolDetails | undefined>({
 		...original,
 		name: "read",
 		label: "read",
@@ -33,11 +33,12 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(r, options, theme, context) {
 			// Images: let the built-in renderer handle attachments/fallbacks.
-			const hasImage = r?.content?.some((c: any) => c.type === "image");
+			const hasImage = r?.content?.some((c) => c.type === "image");
 			if (hasImage && originalRenderResult) return originalRenderResult(r, options, theme, context);
 
 			const s = style(theme);
-			const text = (r?.content?.find((c: any) => c.type === "text") as any)?.text ?? "";
+			const textContent = r?.content?.find((c) => c.type === "text");
+			const text = textContent?.type === "text" ? textContent.text : "";
 			if (!text) return new Text("", 0, 0);
 
 			// execute() appends a "\n\n[...]" notice at the end when truncation/continuation applies,
@@ -56,7 +57,7 @@ export default function (pi: ExtensionAPI) {
 				const displayLines = lang ? highlightCode(rawLines.join("\n"), lang) : rawLines;
 				const width = String(offset + rawLines.length - 1).length;
 				rendered = displayLines
-					.map((line, i) => s.paddedLine(offset + i, width) + "  " + (lang ? line : s.dim(line)))
+					.map((line, i) => s.paddedLine(offset + i, width) + (lang ? line : s.dim(line)))
 					.join("\n");
 			}
 
@@ -94,12 +95,12 @@ type Style = {
 	dim: (s: string) => string;
 	tool: (s: string) => string;
 	lineNumber: (s: string) => string;
-	paddedLine: (line: number | string, width: number) => string;
+	paddedLine: (line: number | string | undefined, width: number) => string;
 	applyCollapse: (text: string, expanded: boolean) => string;
 };
 
-function style(theme: any): Style {
-	const fg = (k: string, v: string) => theme.fg(k, v);
+function style(theme: Theme): Style {
+	const fg = (k: ThemeColor, v: string) => theme.fg(k, v);
 	const bold = (v: string) => theme.bold(v);
 	const yellow = (v: string) => fg("warning", v);
 	const white = (v: string) => fg("toolTitle", bold(v));
@@ -109,7 +110,7 @@ function style(theme: any): Style {
 		dim: (v) => fg("dim", v),
 		tool: white,
 		lineNumber: (v) => v.startsWith(":") ? white(":") + yellow(v.slice(1)) : yellow(v),
-		paddedLine: (line, width) => yellow(String(line).padStart(width)),
+		paddedLine: (line, width) => (line ? yellow(String(line).padStart(width)) + "  " : ""),
 		applyCollapse(text, expanded) {
 			if (expanded) return text;
 			const lines = text.split("\n");

@@ -1,6 +1,6 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor, ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
 import { highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type, type TOptional, type TString } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 import os from "node:os";
@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
 			pattern: Type.String({ description: "Grep pattern" }),
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards to grep multiple files" }),
 			flags: Type.Optional(Type.String({ description: "Grep flags eg: -i -n -A3 -B2 -C5. Default: -n" })),
-			...optionalProject(),
+			...optionalProject,
 		}),
 		renderCall(params, theme) {
 			const s = style(theme);
@@ -138,20 +138,20 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial, expanded }, theme) {
 			const s = style(theme);
 			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
-			if (!r.details || (!r.details.rows && !r.details.rawLines)) {
-				const text = r.content[0]?.text || "No matches found.";
-				return new Text("\n" + s.applyCollapse(text, expanded), 0, 0);
+			const d = r.details;
+			if (!d || (!d.rows?.length && !d.rawLines?.length)) {
+				return new Text("\n" + s.applyCollapse(firstText(r) || "No matches found.", expanded), 0, 0);
 			}
-			let body = r.details.rawMode
-				? formatRawGrep(s, r.details.rawLines, r.details.cwd)
-				: formatGrep(s, r.details.rows, r.details.cwd);
-			if (r.details.linesTruncated) body += "\n" + s.dim(`[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]`);
+			let body = d.rawMode
+				? formatRawGrep(s, d.rawLines ?? [], d.cwd ?? "")
+				: formatGrep(s, d.rows ?? [], d.cwd ?? "");
+			if (d.linesTruncated) body += "\n" + s.dim(`[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]`);
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});
 
 	// Chunked grep to stay under Windows cmdline limits (~32KB). Bounded worker pool, sticky exit code: error > match > no-match.
-	async function runGrepChunked(flagArgs: string[], pattern: string, files: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string; code: number }> {
+	async function runGrepChunked(flagArgs: string[], pattern: string, files: string[], signal?: AbortSignal): Promise<{ stdout: string; stderr: string; code: number }> {
 		const chunks: string[][] = [];
 		for (let i = 0; i < files.length; i += GREP_CHUNK) chunks.push(files.slice(i, i + GREP_CHUNK));
 		const results: Array<{ stdout: string; stderr: string; code: number }> = new Array(chunks.length);
@@ -189,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: ["Use java_members to explore all fields/methods on a class"],
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
-			...optionalProject(),
+			...optionalProject,
 		}),
 		renderCall(params, theme) {
 			const s = style(theme);
@@ -206,7 +206,7 @@ export default function (pi: ExtensionAPI) {
 			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Type not found." }, (data, cwd, s) => {
 				const entries = data.entries || [];
 				if (!entries.length) {
-					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "Type has no members.");
+					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "Type has no members.");
 					return new Text("\n" + msg, 0, 0);
 				}
 				return renderMembers(s, entries, cwd);
@@ -227,7 +227,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			limit: Type.Optional(Type.Number({ description: "Max lines of source when exactly one type matches. Default 500" })),
-			...optionalProject(),
+			...optionalProject,
 		}),
 		renderCall(params, theme) {
 			const s = style(theme);
@@ -267,14 +267,14 @@ export default function (pi: ExtensionAPI) {
 			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
 			if (r.details?.single) {
 				const m = r.details.single;
-				const cwd = r.details.cwd;
+				const cwd = r.details.cwd ?? "";
 				const header = s.accent(m.type) + "  " + formatLocation(s, m.file, m.line, m.endLine, cwd);
 				const rendered = s.javaCode(stripIndent(m.source || ""));
 				const body = m.line
 					? (() => {
 						const lines = rendered.split("\n");
 						const w = String(m.line + lines.length - 1).length;
-						return lines.map((ln, i) => s.paddedLine(m.line + i, w) + "  " + ln).join("\n");
+						return lines.map((ln, i) => s.paddedLine(m.line + i, w) + ln).join("\n");
 					})()
 					: rendered;
 				let out = header + "\n" + body;
@@ -284,10 +284,10 @@ export default function (pi: ExtensionAPI) {
 				}
 				return new Text("\n" + s.withWarning(s.applyCollapse(out, expanded), r.details.warning), 0, 0);
 			}
-			if (!r.details?.matches) return new Text("\n" + (r.content[0]?.text || "No types found."), 0, 0);
-			const { matches, cwd } = r.details;
+			if (!r.details?.matches) return new Text("\n" + (firstText(r) || "No types found."), 0, 0);
+			const { matches, cwd = "" } = r.details;
 			const w = maxLineWidth(matches);
-			const body = groupByFile(s, matches, cwd, (t) => (t.line ? s.paddedLine(t.line, w) + "  " : "") + s.accent(t.type));
+			const body = groupByFile(s, matches, cwd, (t) => s.paddedLine(t.line, w) + s.accent(t.type));
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});
@@ -303,7 +303,7 @@ export default function (pi: ExtensionAPI) {
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			method: Type.String({ description: "Method name" }),
 			paramTypes: Type.Optional(Type.String({ description: "Comma-separated param types for overloaded methods" })),
-			...optionalProject(),
+			...optionalProject,
 		}),
 		renderCall(params, theme) {
 			const s = style(theme);
@@ -356,11 +356,11 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			const path = require("node:path");
-			const serverParams: any = { ...params };
+			const serverParams: Record<string, any> = { ...params };
 			if (!params.type) serverParams.file = path.resolve(ctx.cwd, params.file);
 			const data = await jdt("/java_organize_imports", serverParams, signal);
 			if (data._error) throw new Error(data._error + ": " + (params.type || params.file));
-			if (data.organized) return result("Success");
+			if (data.organized) return result("Success", {});
 			const lines = ["Ambiguous imports, call again with resolve parameter:"];
 			for (const c of data.conflicts)
 				lines.push(` ${c.type}: ${c.choices.join(", ")}`);
@@ -369,10 +369,10 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial, expanded }, theme) {
 			const s = style(theme);
 			if (isPartial) return new Text("\n" + s.yellow("Organizing..."), 0, 0);
-			const text = r.content[0]?.text || "";
+			const text = firstText(r);
 			if (text === "Success") return new Text("\n" + s.green("Success."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + (text || "Not found."), 0, 0);
-			if (!r.details?.data.conflicts) return new Text("\n" + text, 0, 0);
+			if (!r.details.data.conflicts) return new Text("\n" + text, 0, 0);
 			const parts = [s.red("Ambiguous imports, call again with resolve parameter:")];
 			for (const c of r.details.data.conflicts)
 				parts.push(`${s.accent(c.type)}: ${c.choices.join(", ")}`);
@@ -388,7 +388,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Refreshes workspace and waits for build to complete",
 		promptGuidelines: ["Verify projects compile after all editing is complete"],
 		parameters: Type.Object({
-			...optionalProject(),
+			...optionalProject,
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) {
@@ -398,7 +398,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_errors", params, signal);
 			if (data._error) throw new Error(data._error);
-			if (data.total === 0) return result("None");
+			if (data.total === 0) return result("None", {});
 			await enrichEnclosing(data.errors, signal);
 			const text = groupByFile(plain, data.errors, ctx.cwd, (e) => {
 				let out = `${e.line}`;
@@ -414,16 +414,16 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial, expanded }, theme) {
 			const s = style(theme);
 			if (isPartial) return new Text("\n" + s.yellow("Building..."), 0, 0);
-			const text = r.content[0]?.text || "";
+			const text = firstText(r);
 			if (text === "None") return new Text("\n" + s.green("No errors."), 0, 0);
 			if (!r.details?.data) return new Text("\n" + text, 0, 0);
-			const { data, cwd } = r.details;
+			const { data, cwd = "" } = r.details;
 			const w = maxLineWidth(data.errors);
 			const body = groupByFile(s, data.errors, cwd, (e) => {
 				const severity = e.severity == "error" ? "Error" : "Warning";
 				const encl = enclosingLabel(e.enclosingType, e.enclosingMethod);
-				const enclPart = encl ? "  " + s.accent(encl) : "";
-				return s.paddedLine(e.line, w) + enclPart + "  " + s.red(`${severity}: ${e.message}`) + (e.context ? `\n${s.javaCode(stripIndent(e.context))}` : "");
+				const enclPart = encl ? s.accent(encl) + "  " : "";
+				return s.paddedLine(e.line, w) + enclPart + s.red(`${severity}: ${e.message}`) + (e.context ? `\n${s.javaCode(stripIndent(e.context))}` : "");
 			}, data.limited ? `Showing ${data.errors.length} of ${data.total}.` : undefined);
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
@@ -442,7 +442,7 @@ export default function (pi: ExtensionAPI) {
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method eg: String,int" })),
 			access: Type.Optional(StringEnum(["read", "write"] as const, { description: "Filter to field read or write accesses" })),
 			file: Type.Optional(Type.String({ description: "Filter to file paths matching this substring" })),
-			...optionalProject(),
+			...optionalProject,
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme, context) {
@@ -462,7 +462,7 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, ctx, theme) {
 			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found." }, (data, cwd, s) => {
 				if (data.total === 0) {
-					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "No references found.");
+					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No references found.");
 					return new Text("\n" + msg, 0, 0);
 				}
 				const w = maxLineWidth(data.references);
@@ -485,7 +485,7 @@ export default function (pi: ExtensionAPI) {
 			})),
 			method: Type.Optional(Type.String({ description: "Filter to types that override this method" })),
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method eg: String,int" })),
-			...optionalProject(),
+			...optionalProject,
 		}),
 		renderCall(params, theme) {
 			const s = style(theme);
@@ -506,7 +506,7 @@ export default function (pi: ExtensionAPI) {
 			return jdtResult(r, ctx, theme, { loading: "Working...", notFound: "Type not found." }, (data, cwd, s) => {
 				const types = data.types || [];
 				if (types.length === 0) {
-					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "No types in hierarchy.");
+					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No types in hierarchy.");
 					return new Text("\n" + msg, 0, 0);
 				}
 				return types.map((t: any) => s.accent(t.type) + (t.file ? "  " + formatLocation(s, t.file, t.line, undefined, cwd) : "")).join("\n");
@@ -524,7 +524,7 @@ export default function (pi: ExtensionAPI) {
 			type: Type.String({ description: "Type name or pattern with * and ? wildcards" }),
 			method: Type.String({ description: "Method name" }),
 			paramTypes: Type.Optional(Type.String({ description: "Parameter types for overloaded method" })),
-			...optionalProject(),
+			...optionalProject,
 			limit: Type.Optional(Type.Number({ description: "Maximum results. Default 50" })),
 		}),
 		renderCall(params, theme) {
@@ -544,7 +544,7 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, ctx, theme) {
 			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found." }, (data, cwd, s) => {
 				if (data.total === 0) {
-					const msg = data.warning ? s.red(data.warning) : (r.content[0]?.text || "No callers found.");
+					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No callers found.");
 					return new Text("\n" + msg, 0, 0);
 				}
 				const w = maxLineWidth(data.callers);
@@ -577,15 +577,28 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial }, theme) {
 			const s = style(theme);
 			if (isPartial) return new Text("\n" + s.yellow("Working..."), 0, 0);
-			if (!r.details?.data) return new Text("\n" + (r.content[0]?.text || "Project not found."), 0, 0);
+			if (!r.details?.data) return new Text("\n" + (firstText(r) || "Project not found."), 0, 0);
 			return new Text("\n" + s.filePath(r.details.data.file), 0, 0);
 		},
 	});
 }
 
+// JDT server responses are loosely shaped; we access fields ad hoc.
+type JdtData = Record<string, any>;
+
+// Shared details shape for tools that pass through the raw JDT response.
+interface JdtDetails { data?: JdtData; cwd?: string; }
+
+// PROJECT_PARAMS is a compile-time toggle. When disabled, the cast keeps the
+// `project` key present in the Static<> shape (as `string | undefined`) so
+// tools can reference `params.project` without per-tool conditionals.
+const optionalProject: { project: TOptional<TString> } = PROJECT_PARAMS
+	? { project: Type.Optional(Type.String({ description: "Eclipse project name" })) }
+	: ({} as { project: TOptional<TString> });
+
 // ---- HTTP ----
 
-async function jdt(path: string, params: Record<string, any>, signal?: AbortSignal, body?: string): Promise<any> {
+async function jdt(path: string, params: Record<string, any>, signal?: AbortSignal, body?: string): Promise<JdtData> {
 	const url = new URL(path, BASE);
 	for (const [k, v] of Object.entries(params))
 		if (v != null && v !== "") url.searchParams.set(k, String(v));
@@ -684,11 +697,11 @@ function formatGrep(s: Style, rows: Array<{ file: string; line: number; content:
 			// Context lines (-A/-B/-C) render dim with no enclosing label; the match line above already shows it.
 			const isContext = r.isMatch === false;
 			if (isContext) {
-				parts.push(s.paddedLine(r.line, w) + "  " + s.dim(r.content));
+				parts.push(s.paddedLine(r.line, w) + s.dim(r.content));
 			} else {
 				const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
 				const enclPart = encl ? s.accent(encl) + "  " : "";
-				parts.push(s.paddedLine(r.line, w) + "  " + enclPart + s.javaCode(r.content));
+				parts.push(s.paddedLine(r.line, w) + enclPart + s.javaCode(r.content));
 			}
 		}
 	}
@@ -755,16 +768,15 @@ function renderMembers(s: Style, entries: any[], cwd: string): string {
 		let h = s.accent(`${label}${e.type}`);
 		if (e.file) h += "  " + s.filePath(relPath(e.file, cwd));
 		parts.push(h);
-		const pad = (line: number | undefined) => line ? s.paddedLine(line, w) : " ".repeat(w);
 		if (e.fields?.length) {
 			parts.push(s.accent("Fields"));
 			for (const f of e.fields)
-				parts.push(` ${pad(f.line)}  ` + s.javaCode(`${f.flags ? f.flags + " " : ""}${f.type} ${f.name}`));
+				parts.push(s.paddedLine(f.line, w) + s.javaCode(`${f.flags ? f.flags + " " : ""}${f.type} ${f.name}`));
 		}
 		if (e.methods?.length) {
 			parts.push(s.accent("Methods"));
 			for (const m of e.methods)
-				parts.push(` ${pad(m.line)}  ` + s.javaCode(`${m.flags ? m.flags + " " : ""}${m.returnType ? m.returnType + " " : ""}${m.name}(${m.parameters})`));
+				parts.push(s.paddedLine(m.line, w) + s.javaCode(`${m.flags ? m.flags + " " : ""}${m.returnType ? m.returnType + " " : ""}${m.name}(${m.parameters})`));
 		}
 	}
 	return parts.join("\n");
@@ -800,7 +812,7 @@ function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean
 		const full = header ? (loc ? header + "  " + loc : header) : loc;
 		const rendered = s.javaCode(stripIndent(source));
 		const numbered = showLineNumbers && line
-			? rendered.split("\n").map((ln, i) => s.paddedLine(line + i, w) + "  " + ln).join("\n")
+			? rendered.split("\n").map((ln, i) => s.paddedLine(line + i, w) + ln).join("\n")
 			: rendered;
 		return (full ? full + "\n" : "") + numbered;
 	};
@@ -817,11 +829,11 @@ function formatRefRowPlain(r: any): string {
 }
 
 function formatRefRowStyled(s: Style, r: any, width: number): string {
-	let out = s.paddedLine(r.line, width);
 	const encl = enclosingLabel(r.enclosingType, r.enclosingMethod);
-	if (encl) out += "  " + s.accent(encl);
-	if (r.context) out += "  " + s.javaCode(r.context);
-	return out;
+	const tail: string[] = [];
+	if (encl) tail.push(s.accent(encl));
+	if (r.context) tail.push(s.javaCode(r.context));
+	return s.paddedLine(r.line, width) + tail.join("  ");
 }
 
 function typeRef(s: Style, params: any): string {
@@ -834,11 +846,11 @@ function typeRef(s: Style, params: any): string {
 	return text;
 }
 
-function typePlain(params: any): string {
+function typePlain(params: { type: string; member?: string; method?: string; paramTypes?: string }): string {
 	let text = params.type;
 	const member = params.member || params.method;
 	if (member) {
-		text += "#" + s.member(member);
+		text += "#" + member;
 		if (params.paramTypes) text += "(" + params.paramTypes + ")";
 	}
 	return text;
@@ -863,19 +875,25 @@ function tooManyError(pattern: string, count: number, max: number, unit: string,
 /** Wraps the common renderResult pattern: partial -> loading; no data -> notFound; else render & wrap with warning+collapse.
  *  The render callback may return a Text to bypass wrapping (for custom empty/error displays). */
 function jdtResult(
-	r: any,
-	{ isPartial, expanded }: { isPartial: boolean; expanded: boolean },
-	theme: any,
+	r: AgentToolResult<JdtDetails | undefined>,
+	{ isPartial, expanded }: ToolRenderResultOptions,
+	theme: Theme,
 	opts: { loading: string; notFound?: string },
-	render: (data: any, cwd: string, s: Style) => string | Text,
+	render: (data: JdtData, cwd: string, s: Style) => string | Text,
 ): Text {
 	const s = style(theme);
 	if (isPartial) return new Text("\n" + s.yellow(opts.loading), 0, 0);
 	const data = r.details?.data;
-	if (!data) return new Text("\n" + (r.content[0]?.text || opts.notFound || "Not found."), 0, 0);
-	const body = render(data, r.details.cwd, s);
+	if (!data) return new Text("\n" + (firstText(r) || opts.notFound || "Not found."), 0, 0);
+	const body = render(data, r.details?.cwd ?? "", s);
 	if (body instanceof Text) return body;
 	return new Text("\n" + s.withWarning(s.applyCollapse(body, expanded), data.warning), 0, 0);
+}
+
+/** Extract the first text content from a tool result, handling the TextContent | ImageContent union. */
+function firstText(r: AgentToolResult<unknown> | undefined): string {
+	const first = r?.content?.[0];
+	return first?.type === "text" ? first.text : "";
 }
 
 function maxLineWidth(items: any[]): number {
@@ -885,8 +903,8 @@ function maxLineWidth(items: any[]): number {
 	return max;
 }
 
-function result(text: string, details?: Record<string, any>) {
-	return { content: [{ type: "text" as const, text }], details: details || {} };
+function result<T>(text: string, details: T): AgentToolResult<T> {
+	return { content: [{ type: "text", text }], details };
 }
 
 // JDK stdlib types whose Javadoc is universally known and just wastes tokens when shown as an incidental
@@ -935,10 +953,6 @@ function relPath(absPath: string, cwd: string): string {
 	return a;
 }
 
-function optionalProject() {
-	return PROJECT_PARAMS ? { project: Type.Optional(Type.String({ description: "Eclipse project name" })) } : {};
-}
-
 // ---- Styling ----
 
 type Style = {
@@ -953,14 +967,14 @@ type Style = {
 	dim: (s: string) => string;
 	tool: (s: string) => string;
 	javaCode: (s: string) => string;
-	paddedLine: (line: number | string, width: number) => string;
+	paddedLine: (line: number | string | undefined, width: number) => string;
 	extra: (...args: Array<string | number | undefined | null>) => string;
 	withWarning: (text: string, warning?: string) => string;
 	applyCollapse: (text: string, expanded: boolean) => string;
 };
 
-function style(theme: any): Style {
-	const fg = (k: string, v: string) => theme.fg(k, v);
+function style(theme: Theme): Style {
+	const fg = (k: ThemeColor, v: string) => theme.fg(k, v);
 	const bold = (v: string) => theme.bold(v);
 	const yellow = (v: string) => fg("warning", v);
 	const white = (v: string) => fg("toolTitle", bold(v));
@@ -976,7 +990,7 @@ function style(theme: any): Style {
 		dim: (v) => fg("dim", v),
 		tool: white,
 		javaCode: (code) => highlightCode(code.replace(/\r/g, ""), "java").join("\n"),
-		paddedLine: (line, width) => yellow(String(line).padStart(width)),
+		paddedLine: (line, width) => (line ? yellow(String(line).padStart(width)) + "  " : ""),
 		extra(...args) {
 			if (args.length == 1) {
 				const v = args[0];
@@ -1006,7 +1020,7 @@ const plain: Style = {
 	white: id, yellow: id, member: id, green: id, red: id, accent: id,
 	lineNumber: id, filePath: id, dim: id, tool: id,
 	javaCode: (code) => code.replace(/\r/g, ""),
-	paddedLine: (line, width) => String(line).padStart(width),
+	paddedLine: (line, width) => (line ? String(line).padStart(width) + "  " : ""),
 	extra(...args) {
 		if (args.length == 1) {
 			const v = args[0];

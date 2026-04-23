@@ -3,7 +3,7 @@
 // - When edits fail due to multiple occurrences, returns minimal unique context to save a turn.
 // - Prefixes `No edits made.` when edits fail to make it clear.
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { EditToolDetails, ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createEditToolDefinition } from "@mariozechner/pi-coding-agent";
 
 import { readFile } from "fs/promises";
@@ -25,10 +25,10 @@ export default function (pi: ExtensionAPI) {
 	// derive the same argsKey. If renderCall uses relative path but renderResult uses the original absolute
 	// path, their argsKeys diverge and setEditPreview reports "changed" on every render, causing an
 	// infinite invalidate loop.
-	const rewriteArgs = (args: any, cwd: string) =>
+	const rewriteArgs = <T extends { path?: string } | undefined>(args: T, cwd: string): T =>
 		args?.path ? { ...args, path: relPath(args.path, cwd) } : args;
 
-	pi.registerTool({
+	pi.registerTool<typeof original.parameters, EditToolDetails | undefined>({
 		...original,
 		name: "edit",
 		label: "edit",

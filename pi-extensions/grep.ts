@@ -1,7 +1,7 @@
 // Grep tool for nicer output than bash grep, provides hints for recovery when
 // there are no matches, and ignores `.git` and other folders.
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { getLanguageFromPath, highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
@@ -114,14 +114,16 @@ export default function (pi: ExtensionAPI) {
 		renderResult(r, { isPartial, expanded }, theme) {
 			const s = style(theme);
 			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
-			if (!r.details || (!r.details.rows && !r.details.rawLines)) {
-				const text = r.content[0]?.text || "No matches found.";
+			const d = r.details;
+			if (!d || (!d.rows?.length && !d.rawLines?.length)) {
+				const first = r.content[0];
+				const text = first?.type === "text" ? first.text : "No matches found.";
 				return new Text("\n" + s.applyCollapse(text, expanded), 0, 0);
 			}
-			let body = r.details.rawMode
-				? formatRaw(s, r.details.rawLines, r.details.cwd)
-				: formatGrep(s, r.details.rows, r.details.cwd);
-			const notices = buildNotices(r.details.matchLimitReached, r.details.linesTruncated);
+			let body = d.rawMode
+				? formatRaw(s, d.rawLines ?? [], d.cwd ?? "")
+				: formatGrep(s, d.rows ?? [], d.cwd ?? "");
+			const notices = buildNotices(d.matchLimitReached, d.linesTruncated);
 			if (notices) body += "\n" + s.dim(`[${notices}]`);
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
@@ -234,11 +236,7 @@ function formatRaw(s: Style, lines: string[], cwd: string): string {
 	});
 	let w = 0;
 	for (const p of parsed) if (p.count) w = Math.max(w, p.count.length);
-	return parsed.map((p) =>
-		p.count
-			? s.paddedLine(p.count, w) + "  " + s.filePath(relPath(p.file, cwd))
-			: s.filePath(relPath(p.file, cwd)),
-	).join("\n");
+	return parsed.map((p) => s.paddedLine(p.count, w) + s.filePath(relPath(p.file, cwd))).join("\n");
 }
 
 function formatGrep(s: Style, rows: Row[], cwd: string): string {
@@ -256,7 +254,7 @@ function formatGrep(s: Style, rows: Row[], cwd: string): string {
 		for (const r of fileRows) {
 			const highlighted = lang ? s.code(r.content, lang) : r.content;
 			const body = r.isMatch ? highlighted : s.dim(r.content);
-			parts.push(s.paddedLine(r.line, w) + "  " + body);
+			parts.push(s.paddedLine(r.line, w) + body);
 		}
 	}
 	return parts.join("\n");
@@ -279,8 +277,8 @@ function relPath(absPath: string, cwd: string): string {
 	return a;
 }
 
-function result(text: string, details?: Record<string, any>) {
-	return { content: [{ type: "text" as const, text }], details: details || {} };
+function result<T>(text: string, details: T): AgentToolResult<T> {
+	return { content: [{ type: "text", text }], details };
 }
 
 // ---- styling (vendored from nateclipse.ts, trimmed) ----
@@ -292,13 +290,13 @@ type Style = {
 	dim: (s: string) => string;
 	tool: (s: string) => string;
 	code: (s: string, lang: string) => string;
-	paddedLine: (line: number | string, width: number) => string;
+	paddedLine: (line: number | string | undefined, width: number) => string;
 	extra: (...args: Array<string | number | undefined | null>) => string;
 	applyCollapse: (text: string, expanded: boolean) => string;
 };
 
-function style(theme: any): Style {
-	const fg = (k: string, v: string) => theme.fg(k, v);
+function style(theme: Theme): Style {
+	const fg = (k: ThemeColor, v: string) => theme.fg(k, v);
 	const bold = (v: string) => theme.bold(v);
 	const yellow = (v: string) => fg("warning", v);
 	const white = (v: string) => fg("toolTitle", bold(v));
@@ -309,7 +307,7 @@ function style(theme: any): Style {
 		dim: (v) => fg("dim", v),
 		tool: white,
 		code: (code, lang) => highlightCode(code.replace(/\r/g, ""), lang).join("\n"),
-		paddedLine: (line, width) => yellow(String(line).padStart(width)),
+		paddedLine: (line, width) => (line ? yellow(String(line).padStart(width)) + "  " : ""),
 		extra(...args) {
 			if (args.length == 1) {
 				const v = args[0];
@@ -341,7 +339,7 @@ const plain: Style = {
 	dim: id,
 	tool: id,
 	code: (code) => code.replace(/\r/g, ""),
-	paddedLine: (line, width) => String(line).padStart(width),
+	paddedLine: (line, width) => (line ? String(line).padStart(width) + "  " : ""),
 	extra(...args) {
 		if (args.length == 1) {
 			const v = args[0];
