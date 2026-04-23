@@ -41,6 +41,10 @@ This extension improves the edit tool by providing context when edits fail:
 
 This extension provides a grep tool. It gives nicer output than making the agent use bash grep, provides hints for recovery when there are no matches, and ignores `.git` and other folders. Agent usage matches bash grep, unlike Pi's grep tool (disabled by default) that has its own parameters.
 
+### read.ts
+
+This extensions delegates to Pi's read tool, so it provides the exact same functionality, but it renders using styling consistent with all other Nateclipse tools.
+
 ## Completion sorting
 
 Eclipse seems to sort completions randomly. This plugin makes it smarter by tracking your most recently used types and projects. Types defined in the same file and project are preferred, and other reasonable logic. The types you are likely to choose appear higher in the list, just imagine.

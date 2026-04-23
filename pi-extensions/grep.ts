@@ -1,3 +1,6 @@
+// Grep tool for nicer output than bash grep, provides hints for recovery when
+// there are no matches, and ignores `.git` and other folders.
+
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -16,9 +19,7 @@ export default function (pi: ExtensionAPI) {
 		label: "grep",
 		promptSnippet: "Search file contents with grep",
 		description: "Runs grep. All grep flags supported. Specify -E if using |",
-		promptGuidelines: [
-			"Use grep tool instead of bash grep",
-		],
+		promptGuidelines: ["Use the grep tool instead of bash grep"],
 		parameters: Type.Object({
 			pattern: Type.String({ description: "Grep pattern" }),
 			path: Type.Optional(Type.String({ description: "Directory or file to search. Default: CWD" })),
@@ -121,7 +122,7 @@ export default function (pi: ExtensionAPI) {
 				? formatRaw(s, r.details.rawLines, r.details.cwd)
 				: formatGrep(s, r.details.rows, r.details.cwd);
 			const notices = buildNotices(r.details.matchLimitReached, r.details.linesTruncated);
-			if (notices) body += "\n" + s.yellow(`[${notices}]`);
+			if (notices) body += "\n" + s.dim(`[${notices}]`);
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});

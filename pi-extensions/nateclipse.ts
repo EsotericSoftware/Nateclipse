@@ -145,7 +145,7 @@ export default function (pi: ExtensionAPI) {
 			let body = r.details.rawMode
 				? formatRawGrep(s, r.details.rawLines, r.details.cwd)
 				: formatGrep(s, r.details.rows, r.details.cwd);
-			if (r.details.linesTruncated) body += "\n" + s.yellow(`[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]`);
+			if (r.details.linesTruncated) body += "\n" + s.dim(`[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]`);
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});
@@ -273,7 +273,7 @@ export default function (pi: ExtensionAPI) {
 				let out = header + "\n" + body;
 				if (m.truncated) {
 					const shown = m.endLine - m.line + 1;
-					out += "\n" + s.yellow(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
+					out += "\n" + s.dim(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
 				}
 				return new Text("\n" + s.withWarning(s.applyCollapse(out, expanded), r.details.warning), 0, 0);
 			}
