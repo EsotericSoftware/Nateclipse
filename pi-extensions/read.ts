@@ -27,7 +27,7 @@ export default function (pi: ExtensionAPI) {
 			if (params?.offset !== undefined || params?.limit !== undefined) {
 				const start = params.offset ?? 1;
 				const end = params.limit !== undefined ? start + params.limit - 1 : "";
-				text += s.yellow(`:${start}${end ? `-${end}` : ""}`);
+				text += s.lineNumber(`:${start}${end ? `-${end}` : ""}`);
 			}
 			return new Text(text, 0, 0);
 		},
@@ -93,6 +93,7 @@ type Style = {
 	accent: (s: string) => string;
 	dim: (s: string) => string;
 	tool: (s: string) => string;
+	lineNumber: (s: string) => string;
 	paddedLine: (line: number | string, width: number) => string;
 	applyCollapse: (text: string, expanded: boolean) => string;
 };
@@ -101,11 +102,13 @@ function style(theme: any): Style {
 	const fg = (k: string, v: string) => theme.fg(k, v);
 	const bold = (v: string) => theme.bold(v);
 	const yellow = (v: string) => fg("warning", v);
+	const white = (v: string) => fg("toolTitle", bold(v));
 	return {
 		yellow,
 		accent: (v) => fg("accent", v),
 		dim: (v) => fg("dim", v),
-		tool: (v) => fg("toolTitle", bold(v)),
+		tool: white,
+		lineNumber: (v) => v.startsWith(":") ? white(":") + yellow(v.slice(1)) : yellow(v),
 		paddedLine: (line, width) => yellow(String(line).padStart(width)),
 		applyCollapse(text, expanded) {
 			if (expanded) return text;

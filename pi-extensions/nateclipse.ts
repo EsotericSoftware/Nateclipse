@@ -776,7 +776,7 @@ function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean
 	// the user explicitly asked for it.
 	type Section = { file: any; line: any; endLine: any; source: string; header: string };
 	const sections: Section[] = [];
-	sections.push({ file: data.file, line: data.line, endLine: data.endLine, source: data.source || "", header: s.accent(data.type) + s.white("#") + data.method });
+	sections.push({ file: data.file, line: data.line, endLine: data.endLine, source: data.source || "", header: s.accent(data.type) + s.white("#") + s.member(data.method) });
 	if (Array.isArray(data.supers)) {
 		for (const sup of data.supers) {
 			const label = sup.kind === "super" ? "Super" : "Overrides";
@@ -789,7 +789,7 @@ function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean
 					if (typeof line === "number") line += stripped.skipped;
 				}
 			}
-			sections.push({ file: sup.file, line, endLine: sup.endLine, source: src, header: s.accent(`${label}: ${sup.type}`) + s.white("#") + sup.method });
+			sections.push({ file: sup.file, line, endLine: sup.endLine, source: src, header: s.accent(`${label}: ${sup.type}`) + s.white("#") + s.member(sup.method) });
 		}
 	}
 	// Width shared across all sections so line numbers align.
@@ -828,7 +828,7 @@ function typeRef(s: Style, params: any): string {
 	let text = " " + s.accent(params.type);
 	const member = params.member || params.method;
 	if (member) {
-		text += s.white("#") + member;
+		text += s.white("#") + s.member(member);
 		if (params.paramTypes) text += s.javaCode("(" + params.paramTypes + ")");
 	}
 	return text;
@@ -838,7 +838,7 @@ function typePlain(params: any): string {
 	let text = params.type;
 	const member = params.member || params.method;
 	if (member) {
-		text += "#" + member;
+		text += "#" + s.member(member);
 		if (params.paramTypes) text += "(" + params.paramTypes + ")";
 	}
 	return text;
@@ -944,6 +944,7 @@ function optionalProject() {
 type Style = {
 	white: (s: string) => string;
 	yellow: (s: string) => string;
+	member: (s: string) => string;
 	green: (s: string) => string;
 	red: (s: string) => string;
 	accent: (s: string) => string;
@@ -966,10 +967,11 @@ function style(theme: any): Style {
 	return {
 		white,
 		yellow,
+		member: yellow,
 		green: (v) => fg("success", bold(v)),
 		red: (v) => fg("error", bold(v)),
 		accent: (v) => fg("accent", v),
-		lineNumber: yellow,
+		lineNumber: (v) => v.startsWith(":") ? white(":") + yellow(v.slice(1)) : yellow(v),
 		filePath: (v) => fg("success", v),
 		dim: (v) => fg("dim", v),
 		tool: white,
@@ -1001,7 +1003,7 @@ function style(theme: any): Style {
 
 const id = (s: string) => s;
 const plain: Style = {
-	white: id, yellow: id, green: id, red: id, accent: id,
+	white: id, yellow: id, member: id, green: id, red: id, accent: id,
 	lineNumber: id, filePath: id, dim: id, tool: id,
 	javaCode: (code) => code.replace(/\r/g, ""),
 	paddedLine: (line, width) => String(line).padStart(width),
