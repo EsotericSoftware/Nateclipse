@@ -2,7 +2,7 @@
 // there are no matches, and ignores `.git` and other folders.
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
+import { getLanguageFromPath, highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { spawn } from "node:child_process";
@@ -252,9 +252,9 @@ function formatGrep(s: Style, rows: Row[], cwd: string): string {
 	const parts: string[] = [];
 	for (const [file, fileRows] of byFile) {
 		parts.push(s.filePath(relPath(file, cwd)));
-		const isJava = file.toLowerCase().endsWith(".java");
+		const lang = getLanguageFromPath(file);
 		for (const r of fileRows) {
-			const highlighted = isJava ? s.javaCode(r.content) : r.content;
+			const highlighted = lang ? s.code(r.content, lang) : r.content;
 			const body = r.isMatch ? highlighted : s.dim(r.content);
 			parts.push(s.paddedLine(r.line, w) + "  " + body);
 		}
@@ -291,7 +291,7 @@ type Style = {
 	filePath: (s: string) => string;
 	dim: (s: string) => string;
 	tool: (s: string) => string;
-	javaCode: (s: string) => string;
+	code: (s: string, lang: string) => string;
 	paddedLine: (line: number | string, width: number) => string;
 	extra: (...args: Array<string | number | undefined | null>) => string;
 	applyCollapse: (text: string, expanded: boolean) => string;
@@ -308,7 +308,7 @@ function style(theme: any): Style {
 		filePath: (v) => fg("success", v),
 		dim: (v) => fg("dim", v),
 		tool: white,
-		javaCode: (code) => highlightCode(code.replace(/\r/g, ""), "java").join("\n"),
+		code: (code, lang) => highlightCode(code.replace(/\r/g, ""), lang).join("\n"),
 		paddedLine: (line, width) => yellow(String(line).padStart(width)),
 		extra(...args) {
 			if (args.length == 1) {
@@ -340,7 +340,7 @@ const plain: Style = {
 	filePath: id,
 	dim: id,
 	tool: id,
-	javaCode: (code) => code.replace(/\r/g, ""),
+	code: (code) => code.replace(/\r/g, ""),
 	paddedLine: (line, width) => String(line).padStart(width),
 	extra(...args) {
 		if (args.length == 1) {

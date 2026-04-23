@@ -7,6 +7,8 @@
 
 Don't use java_* tools, they can't find Nateclipse classes because those are in a workspace for plugin development, not in the main workspace that runs WebJDT.
 
+Don't bother with TSC.
+
 ## Pi documentation
 
 - Main: C:\Apps\node\node_modules\@mariozechner\pi-coding-agent\README.md
