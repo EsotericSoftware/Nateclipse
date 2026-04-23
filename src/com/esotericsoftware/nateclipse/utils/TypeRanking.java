@@ -21,11 +21,12 @@ public class TypeRanking {
 	// ----- Tier constants. Tweak here to adjust ordering. -----
 
 	// Open Type dialog: rules per user spec.
-	// 1. MRU types (most recent first)
+	// 1. MRU types that live in workspace source (most recent first)
 	// 2. Same project as active editor (MRU-ranked types first)
 	// 3. Any other workspace project (by MRU project rank)
-	// 4. Workspace JARs
-	// 5. JDK
+	// 4. Workspace JARs (MRU ordered within tier)
+	// 5. JDK (MRU ordered within tier)
+	// Binary matches (JAR / JDK) never outrank workspace source, even if opened recently.
 	static public final int OPEN_TYPE_MRU = 100_000;
 	static public final int OPEN_TYPE_SAME_PROJECT = 80_000;
 	static public final int OPEN_TYPE_WORKSPACE = 60_000;
@@ -202,8 +203,9 @@ public class TypeRanking {
 		int typeRank = mru.getTypeRank(c.fqn);
 		int projRank = c.projectName != null ? mru.getProjectRank(c.projectName) : -1;
 
-		// MRU types trump everything except JDK/unknown (which we still push below workspace).
-		if (typeRank >= 0 && c.origin != Origin.JDK) return OPEN_TYPE_MRU + (MruTracker.MAX_TYPES - typeRank);
+		// MRU boost applies only to workspace-source matches. Binary matches (JAR / JDK) always sink below source,
+		// regardless of how recently they were opened. MRU still orders within the binary tiers.
+		if (typeRank >= 0 && c.origin == Origin.WORKSPACE_SOURCE) return OPEN_TYPE_MRU + (MruTracker.MAX_TYPES - typeRank);
 
 		switch (c.origin) {
 		case WORKSPACE_SOURCE:
@@ -211,7 +213,9 @@ public class TypeRanking {
 				return OPEN_TYPE_SAME_PROJECT + (projRank >= 0 ? MruTracker.MAX_PROJECTS - projRank : 0);
 			return OPEN_TYPE_WORKSPACE + (projRank >= 0 ? MruTracker.MAX_PROJECTS - projRank : 0);
 		case WORKSPACE_JAR:
-			return OPEN_TYPE_WORKSPACE_JAR + (projRank >= 0 ? MruTracker.MAX_PROJECTS - projRank : 0);
+			return OPEN_TYPE_WORKSPACE_JAR //
+				+ (typeRank >= 0 ? MruTracker.MAX_TYPES - typeRank : 0) //
+				+ (projRank >= 0 ? MruTracker.MAX_PROJECTS - projRank : 0);
 		case JDK:
 			// MRU still matters within JDK bucket so frequently-opened JDK types float to top of that group.
 			return OPEN_TYPE_JDK + (typeRank >= 0 ? MruTracker.MAX_TYPES - typeRank : 0);
