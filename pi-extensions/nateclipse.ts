@@ -771,31 +771,40 @@ function renderMembers(s: Style, entries: any[], cwd: string): string {
 }
 
 function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean = false): string {
-	// Width is shared across the method body and any super/override sections so line numbers align.
-	let w = 0;
-	if (showLineNumbers) {
-		const collect = (d: any) => { if (d?.line) w = Math.max(w, String(d.endLine || d.line).length); };
-		collect(data);
-		if (Array.isArray(data.supers)) for (const sup of data.supers) collect(sup);
+	// Supers from JARs (JDK, libraries) dump huge javadoc we almost never need. Strip the leading /** ... */
+	// and shift the start line so line numbers stay accurate. Primary method is always shown verbatim -
+	// the user explicitly asked for it.
+	type Section = { file: any; line: any; endLine: any; source: string; header: string };
+	const sections: Section[] = [];
+	sections.push({ file: data.file, line: data.line, endLine: data.endLine, source: data.source || "", header: s.accent(data.type) + s.white("#") + data.method });
+	if (Array.isArray(data.supers)) {
+		for (const sup of data.supers) {
+			const label = sup.kind === "super" ? "Super" : "Overrides";
+			let src = sup.source || "";
+			let line = sup.line;
+			if (isJdkType(sup.type)) {
+				const stripped = stripLeadingJavadoc(src);
+				if (stripped.skipped > 0) {
+					src = stripped.source;
+					if (typeof line === "number") line += stripped.skipped;
+				}
+			}
+			sections.push({ file: sup.file, line, endLine: sup.endLine, source: src, header: s.accent(`${label}: ${sup.type}`) + s.white("#") + sup.method });
+		}
 	}
-	const body = (file: any, line: any, endLine: any, src: string, header: string) => {
+	// Width shared across all sections so line numbers align.
+	let w = 0;
+	if (showLineNumbers) for (const sec of sections) if (sec.line) w = Math.max(w, String(sec.endLine || sec.line).length);
+	const body = ({ file, line, endLine, source, header }: Section) => {
 		const loc = formatLocation(s, file, line, endLine, cwd);
 		const full = header ? (loc ? header + "  " + loc : header) : loc;
-		const rendered = s.javaCode(stripIndent(src || ""));
+		const rendered = s.javaCode(stripIndent(source));
 		const numbered = showLineNumbers && line
 			? rendered.split("\n").map((ln, i) => s.paddedLine(line + i, w) + "  " + ln).join("\n")
 			: rendered;
 		return (full ? full + "\n" : "") + numbered;
 	};
-	const pieces: string[] = [];
-	pieces.push(body(data.file, data.line, data.endLine, data.source, s.accent(data.type) + s.white("#") + data.method));
-	if (Array.isArray(data.supers)) {
-		for (const sup of data.supers) {
-			pieces.push("");
-			const label = sup.kind === "super" ? "Super" : "Overrides";
-			pieces.push(body(sup.file, sup.line, sup.endLine, sup.source, s.accent(`${label}: ${sup.type}`) + s.white("#") + sup.method));
-		}
-	}
+	const pieces = sections.map((sec, i) => (i === 0 ? "" : "\n") + body(sec));
 	return pieces.join("\n");
 }
 
@@ -878,6 +887,22 @@ function maxLineWidth(items: any[]): number {
 
 function result(text: string, details?: Record<string, any>) {
 	return { content: [{ type: "text" as const, text }], details: details || {} };
+}
+
+// JDK stdlib types whose Javadoc is universally known and just wastes tokens when shown as an incidental
+// super/override. Library Javadoc (Guava, libGDX, etc.) is often the only contract documentation, so we
+// keep it. Package-based check is more reliable than file paths, which vary by JDK install.
+function isJdkType(type: string | undefined): boolean {
+	return !!type && /^(java|javax|jdk|sun|com\.sun|org\.w3c|org\.xml|org\.ietf)\./.test(type);
+}
+
+// Strips a single leading /** ... */ javadoc block and any following blank/whitespace-only lines.
+// Returns the remaining source and how many source lines were removed, so callers can adjust line numbers.
+function stripLeadingJavadoc(src: string): { source: string; skipped: number } {
+	const m = src.match(/^[ \t]*\/\*\*[\s\S]*?\*\/[ \t]*\r?\n(?:[ \t]*\r?\n)*/);
+	if (!m) return { source: src, skipped: 0 };
+	const skipped = (m[0].match(/\n/g) || []).length;
+	return { source: src.slice(m[0].length), skipped };
 }
 
 function stripIndent(text: string): string {
