@@ -85,9 +85,14 @@ export default function (pi: ExtensionAPI) {
 				const hasUnescapedPipe = /(^|[^\\])\|/.test(params.pattern);
 				if (code !== 2 && !hasExtended && hasUnescapedPipe) {
 					const retry = await runGrep(["-E", ...allFlags], params.pattern, searchPath, MAX_MATCHES, ctx.cwd, rawMode, signal);
-					const retryCount = rawMode ? retry.rawLines.length : retry.rows.length;
-					if (retryCount > 0) {
-						msg += `\nWith -E: ${retryCount} match${retryCount === 1 ? "" : "es"}${retry.matchLimitReached ? "+" : ""}`;
+					const retryMatches = rawMode ? retry.rawLines.length : retry.rows.filter((r) => r.isMatch).length;
+					if (retryMatches > 0 && retryMatches <= 10 && !retry.matchLimitReached) {
+						const body = rawMode
+							? formatRaw(plain, retry.rawLines, ctx.cwd)
+							: formatGrep(plain, retry.rows, ctx.cwd);
+						msg += `\nWith -E:\n${body}`;
+					} else if (retryMatches > 0) {
+						msg += `\nWith -E: ${retryMatches} match${retryMatches === 1 ? "" : "es"}${retry.matchLimitReached ? "+" : ""}`;
 					} else if (retry.code === 2 && retry.stderr) {
 						msg += `\nWith -E: ${retry.stderr.trim().split("\n")[0].replace(/^grep:\s*/, "")}`;
 					} else {

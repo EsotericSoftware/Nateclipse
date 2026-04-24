@@ -78,8 +78,29 @@ export default function (pi: ExtensionAPI) {
 					const retry = await runGrepChunked(["-E", ...flagArgs], params.pattern, files, signal);
 					const retryOut = retry.stdout.replace(/\r/g, "").trim();
 					if (retryOut) {
-						const n = retryOut.split("\n").filter((l) => l.length > 0).length;
-						msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
+						if (rawMode) {
+							const retryLines = retryOut.split("\n").filter((l) => l.length > 0);
+							const n = retryLines.length;
+							if (n > 0 && n <= 10) {
+								msg += `\nWith -E:\n${formatRawGrep(plain, retryLines, ctx.cwd)}`;
+							} else {
+								msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
+							}
+						} else {
+							const retryRows: Array<{ file: string; line: number; content: string; isMatch: boolean }> = [];
+							for (const l of retryOut.split("\n")) {
+								if (!l || l === "--") continue;
+								const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
+								if (!m) continue;
+								retryRows.push({ file: m[1], line: parseInt(m[3]), content: m[4], isMatch: m[2] === ":" });
+							}
+							const n = retryRows.filter((r) => r.isMatch).length;
+							if (n > 0 && n <= 10) {
+								msg += `\nWith -E:\n${formatGrep(plain, retryRows, ctx.cwd)}`;
+							} else {
+								msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
+							}
+						}
 					} else {
 						const err = (retry.stderr || "").replace(/\r/g, "").trim().split("\n")[0];
 						// grep exit 2 = error, 1 = no match, 0 = match.
