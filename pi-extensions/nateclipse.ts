@@ -65,7 +65,7 @@ export default function (pi: ExtensionAPI) {
 				const cmd = `grep ${flagArgs.join(" ")} ${JSON.stringify(params.pattern)}`.replace(/\s+/g, " ").trim();
 				let msg = `No matches for: ${cmd}`;
 				const MAX_FILES_SHOWN = 3;
-				for (const f of files.slice(0, MAX_FILES_SHOWN)) msg += `\n${f}`;
+				for (const f of files.slice(0, MAX_FILES_SHOWN)) msg += `\n${relPath(f, ctx.cwd)}`;
 				if (files.length > MAX_FILES_SHOWN) msg += `\n...+${files.length - MAX_FILES_SHOWN} more`;
 				// BRE footgun: `|` without -E/-P is a literal pipe. `\|` is GNU BRE alternation so don't warn if escaped.
 				const hasExtended = flagArgs.some((f) =>
