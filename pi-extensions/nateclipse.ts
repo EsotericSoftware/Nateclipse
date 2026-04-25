@@ -1,3 +1,5 @@
+// Provides tools to access Eclipse JDT through the Nateclipse plugin.
+
 import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor, ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
 import { highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
 import { Type, type TOptional, type TString } from "@sinclair/typebox";
@@ -15,7 +17,9 @@ const GREP_CHUNK = 100;
 const TYPE_MAX = 200;
 const ORGANIZE_IMPORTS_MAX = 100;
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+	//(await import("./util/debug")).default(pi);
+
 	const cwd = process.cwd();
 
 	// ---- java_grep ----

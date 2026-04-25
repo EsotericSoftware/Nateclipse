@@ -15,5 +15,8 @@ Don't bother with TSC.
 - Additional: C:\Apps\node\node_modules\@mariozechner\pi-coding-agent\docs
 - Examples: C:\Apps\node\node_modules\@mariozechner\pi-coding-agent\examples (extensions, custom tools, SDK)
 - When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
-- Full Pi source: C:\Dev\oss\pi-mono
-- Core tools: C:\Dev\oss\pi-mono\packages\coding-agent\src\core\tools
+- When working on pi first read the docs and examples and follow .md cross-references before implementing
+- Always read pi .md files completely and follow links to related docs (eg, tui.md for TUI API details)
+- Full Pi source: C:\Dev\oss\pi-mono (git pull to ensure latest)
+- Core tools: C:\Dev\oss\pi-mono\packages\coding-agent\src\core\tools (git pull to ensure latest)
+- Installed extensions: C:\Users\Nate\.pi\agent\extensions (pi-extensions/*.ts are symlinked here)

@@ -1,13 +1,12 @@
-// Wraps pi's built-in read tool so its renderCall/renderResult match the other Nateclipse tools:
-// - Tool name and path styled like grep / java_*.
-// - Each output line prefixed with a right-padded 1-based line number ("  42  text"), offset-aware.
-// Behavior (execute) is the default, only rendering is overridden.
+// Wraps pi's built-in read tool so its styling matches other Nateclipse tools.
 
 import type { ExtensionAPI, ReadToolDetails, Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { createReadToolDefinition, getLanguageFromPath, highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+	//(await import("./util/debug")).default(pi);
+
 	const cwd = process.cwd();
 	const original = createReadToolDefinition(cwd);
 	const originalRenderResult = original.renderResult;

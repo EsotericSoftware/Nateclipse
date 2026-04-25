@@ -15,7 +15,9 @@ interface EditParams { path?: string; edits?: EditOp[]; }
 const MAX_CONTEXT_LINES = 20;
 const PREVIEW_LEN = 40;
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+	//(await import("./util/debug")).default(pi);
+
 	const cwd = process.cwd();
 	const original = createEditToolDefinition(cwd);
 	const originalRenderCall = original.renderCall;

@@ -13,7 +13,9 @@ const MAX_MATCHES = 100;
 const MAX_LINE_LENGTH = 500;
 const DEFAULT_EXCLUDE_DIRS = [".git", "node_modules", "bin", "target"];
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+	//(await import("./util/debug")).default(pi);
+
 	pi.registerTool({
 		name: "grep",
 		label: "grep",
