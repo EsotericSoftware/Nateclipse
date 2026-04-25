@@ -28,8 +28,8 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
 
 /** Re-orders Java content-assist proposals so that:
  * <ol>
- * <li>Templates whose name exactly matches the typed prefix (eg typing {@code sout} for the {@code sout} template) come
- * first. Non-exact templates fall through to normal relevance-based ordering.
+ * <li>Templates whose name exactly matches the typed prefix (eg typing {@code sout} for the {@code sout} template) come first.
+ * Non-exact templates fall through to normal relevance-based ordering.
  * <li>Types declared in the current compilation unit come next.
  * <li>Then types already imported by the current compilation unit (explicit imports beat wildcards).
  * <li>Then types in the same package, same project, other workspace projects.

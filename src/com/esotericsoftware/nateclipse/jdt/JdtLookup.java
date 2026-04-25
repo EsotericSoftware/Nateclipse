@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IType;
@@ -139,6 +140,20 @@ public class JdtLookup {
 		}
 		for (var method : type.getMethods())
 			if (method.getElementName().equals(methodName)) return method;
+		return null;
+	}
+
+	/** Like {@link #findMethod} but walks the supertype hierarchy if no direct match is found. Returns the first match in the
+	 * superclass chain, then interfaces (the order produced by {@link IType#newSupertypeHierarchy}). */
+	public static IMethod findMethodInHierarchy (IType type, String methodName, String paramTypes) throws JavaModelException {
+		var direct = findMethod(type, methodName, paramTypes);
+		if (direct != null) return direct;
+		var hierarchy = type.newSupertypeHierarchy(new NullProgressMonitor());
+		for (var sup : hierarchy.getAllSupertypes(type)) {
+			if ("java.lang.Object".equals(sup.getFullyQualifiedName())) continue;
+			var m = findMethod(sup, methodName, paramTypes);
+			if (m != null) return m;
+		}
 		return null;
 	}
 

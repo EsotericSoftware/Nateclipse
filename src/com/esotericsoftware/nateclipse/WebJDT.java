@@ -496,11 +496,14 @@ public class WebJDT extends WebServer {
 		var type = resolveTypeOrError(exchange, projectName, typeName);
 		if (type == null) return;
 
-		var method = findMethod(type, methodName, paramTypes);
+		var method = findMethodInHierarchy(type, methodName, paramTypes);
 		if (method == null) {
 			error(exchange, 404, "Type " + type.getFullyQualifiedName() + " found, doesn't have method: " + methodName);
 			return;
 		}
+
+		var declaringType = method.getDeclaringType();
+		boolean inherited = declaringType != null && !declaringType.getFullyQualifiedName().equals(type.getFullyQualifiedName());
 
 		var cu = method.getCompilationUnit();
 		if (cu == null) {
@@ -527,9 +530,10 @@ public class WebJDT extends WebServer {
 
 		var json = new Json();
 		json.object();
-		json.set("type", type.getFullyQualifiedName());
+		json.set("type", declaringType != null ? declaringType.getFullyQualifiedName() : type.getFullyQualifiedName());
 		json.set("method", method.getElementName());
-		var resource = type.getResource();
+		if (inherited) json.set("inheritedBy", type.getFullyQualifiedName());
+		var resource = cu.getResource();
 		if (resource != null) json.set("file", filePath(resource));
 		int endLine = startLine + methodSource.split("\n", -1).length - 1;
 		json.set("line", startLine);
