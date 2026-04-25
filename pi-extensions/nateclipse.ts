@@ -814,7 +814,6 @@ function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean
 	type Section = { file: any; line: any; endLine: any; source: string; header: string };
 	const sections: Section[] = [];
 	let primaryHeader = s.accent(data.type) + s.white("#") + s.member(data.method);
-	if (data.inheritedBy) primaryHeader += "  " + s.dim(`(inherited by ${data.inheritedBy})`);
 	sections.push({ file: data.file, line: data.line, endLine: data.endLine, source: data.source || "", header: primaryHeader });
 	if (Array.isArray(data.supers)) {
 		for (const sup of data.supers) {

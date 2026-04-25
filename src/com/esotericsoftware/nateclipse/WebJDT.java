@@ -503,7 +503,6 @@ public class WebJDT extends WebServer {
 		}
 
 		var declaringType = method.getDeclaringType();
-		boolean inherited = declaringType != null && !declaringType.getFullyQualifiedName().equals(type.getFullyQualifiedName());
 
 		var cu = method.getCompilationUnit();
 		if (cu == null) {
@@ -532,7 +531,6 @@ public class WebJDT extends WebServer {
 		json.object();
 		json.set("type", declaringType != null ? declaringType.getFullyQualifiedName() : type.getFullyQualifiedName());
 		json.set("method", method.getElementName());
-		if (inherited) json.set("inheritedBy", type.getFullyQualifiedName());
 		var resource = cu.getResource();
 		if (resource != null) json.set("file", filePath(resource));
 		int endLine = startLine + methodSource.split("\n", -1).length - 1;
