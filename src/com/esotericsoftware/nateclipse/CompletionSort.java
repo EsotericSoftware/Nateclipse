@@ -28,7 +28,8 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
 
 /** Re-orders Java content-assist proposals so that:
  * <ol>
- * <li>Templates (eg {@code sout} -> {@code System.out.println()}) come first.
+ * <li>Templates whose name exactly matches the typed prefix (eg typing {@code sout} for the {@code sout} template) come
+ * first. Non-exact templates fall through to normal relevance-based ordering.
  * <li>Types declared in the current compilation unit come next.
  * <li>Then types already imported by the current compilation unit (explicit imports beat wildcards).
  * <li>Then types in the same package, same project, other workspace projects.
@@ -55,6 +56,7 @@ public class CompletionSort extends AbstractProposalSorter {
 	}
 
 	static private final Map<Class<?>, Method> FQN_METHOD_CACHE = new ConcurrentHashMap<>();
+	static private final Map<Class<?>, Method> TEMPLATE_METHOD_CACHE = new ConcurrentHashMap<>();
 
 	static private Method fqnMethod (Class<?> c) {
 		Method m = FQN_METHOD_CACHE.get(c);
@@ -69,10 +71,24 @@ public class CompletionSort extends AbstractProposalSorter {
 		return m;
 	}
 
+	static private Method templateMethod (Class<?> c) {
+		Method m = TEMPLATE_METHOD_CACHE.get(c);
+		if (m != null) return m;
+		try {
+			m = c.getDeclaredMethod("getTemplate");
+			m.setAccessible(true);
+		} catch (Exception e) {
+			m = NONE;
+		}
+		TEMPLATE_METHOD_CACHE.put(c, m);
+		return m;
+	}
+
 	// --- Per-invocation context ---
 
 	private String activeProject;
 	private String activePackage;
+	private String typedPrefix = "";
 	private Set<String> currentCuTypes = Collections.emptySet();
 	private Set<String> importedTypes = Collections.emptySet();
 	private Set<String> importedPackages = Collections.emptySet();
@@ -85,10 +101,16 @@ public class CompletionSort extends AbstractProposalSorter {
 		scoreCache.clear();
 		activeProject = null;
 		activePackage = null;
+		typedPrefix = "";
 		currentCuTypes = Collections.emptySet();
 		importedTypes = Collections.emptySet();
 		importedPackages = Collections.emptySet();
 		try {
+			try {
+				CharSequence pre = context.computeIdentifierPrefix();
+				if (pre != null) typedPrefix = pre.toString();
+			} catch (Exception ignored) {
+			}
 			if (context instanceof JavaContentAssistInvocationContext jc) {
 				IJavaProject project = jc.getProject();
 				if (project != null) activeProject = project.getElementName();
@@ -150,6 +172,7 @@ public class CompletionSort extends AbstractProposalSorter {
 		scoreCache.clear();
 		activeProject = null;
 		activePackage = null;
+		typedPrefix = "";
 		currentCuTypes = Collections.emptySet();
 		importedTypes = Collections.emptySet();
 		importedPackages = Collections.emptySet();
@@ -157,12 +180,13 @@ public class CompletionSort extends AbstractProposalSorter {
 
 	@Override
 	public int compare (ICompletionProposal p1, ICompletionProposal p2) {
-		// Templates (eg "sout" -> "System.out.println()") always come first.
-		boolean t1 = isTemplate(p1);
-		boolean t2 = isTemplate(p2);
-		if (t1 && !t2) return -1;
-		if (t2 && !t1) return 1;
-		if (t1 && t2) return compareByRelevance(p1, p2);
+		// Only templates whose name exactly matches the typed prefix get promoted to the top.
+		// Non-exact templates fall through to normal relevance-based ordering below.
+		boolean e1 = isExactTemplateMatch(p1);
+		boolean e2 = isExactTemplateMatch(p2);
+		if (e1 && !e2) return -1;
+		if (e2 && !e1) return 1;
+		if (e1 && e2) return compareByRelevance(p1, p2);
 
 		Integer s1 = scoreOrNull(p1);
 		Integer s2 = scoreOrNull(p2);
@@ -243,6 +267,43 @@ public class CompletionSort extends AbstractProposalSorter {
 		// Fallback: some template proposals may not extend jface's TemplateProposal directly.
 		String cn = p.getClass().getName();
 		return cn.endsWith("TemplateProposal") || cn.contains(".template.");
+	}
+
+	private boolean isExactTemplateMatch (ICompletionProposal p) {
+		if (typedPrefix == null || typedPrefix.isEmpty()) return false;
+		if (!isTemplate(p)) return false;
+		String name = templateName(p);
+		return name != null && name.equalsIgnoreCase(typedPrefix);
+	}
+
+	static private String templateName (ICompletionProposal p) {
+		// Try reflection on getTemplate().getName() first (works for jface TemplateProposal and subclasses).
+		Class<?> c = p.getClass();
+		while (c != null && c != Object.class) {
+			Method m = templateMethod(c);
+			if (m != NONE) {
+				try {
+					Object tmpl = m.invoke(p);
+					if (tmpl != null) {
+						Method getName = tmpl.getClass().getMethod("getName");
+						Object n = getName.invoke(tmpl);
+						if (n instanceof String s && !s.isEmpty()) return s;
+					}
+				} catch (Exception ignored) {
+				}
+				break;
+			}
+			c = c.getSuperclass();
+		}
+		// Fallback: parse leading word from display string (eg "sout - System.out.println()").
+		String d = safeDisplay(p);
+		int i = 0;
+		while (i < d.length()) {
+			char ch = d.charAt(i);
+			if (!Character.isJavaIdentifierPart(ch)) break;
+			i++;
+		}
+		return i > 0 ? d.substring(0, i) : null;
 	}
 
 	static private int relevance (ICompletionProposal p) {
