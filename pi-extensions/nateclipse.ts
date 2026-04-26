@@ -286,8 +286,8 @@ export default async function (pi: ExtensionAPI) {
 				throw tooManyError(params.type, matches.length, TYPE_MAX, "types",
 					matches.map((m: any) => m.type), "Narrow the pattern");
 			}
-			const text = groupByFile(plain, matches, ctx.cwd, (t) => (t.line ? `${t.line}` : " ") + `  ${t.type}`);
-			return result(text, { matches, cwd: ctx.cwd });
+			const text = groupByFile(plain, matches, ctx.cwd, (t) => (t.line ? `${t.line}` : " ") + `  ${simplifyType(t.type, params.type, "…")}`);
+			return result(text, { matches, cwd: ctx.cwd, inputType: params.type });
 		},
 		renderResult(r, { isPartial, expanded }, theme) {
 			const s = style(theme);
@@ -314,8 +314,9 @@ export default async function (pi: ExtensionAPI) {
 			}
 			if (!r.details?.matches) return new Text("\n" + (firstText(r) || "No types found."), 0, 0);
 			const { matches, cwd = "" } = r.details;
+			const inputType = (r.details as any).inputType as string | undefined;
 			const w = maxLineWidth(matches);
-			const body = groupByFile(s, matches, cwd, (t) => s.paddedLine(t.line, w) + s.accent(t.type));
+			const body = groupByFile(s, matches, cwd, (t) => s.paddedLine(t.line, w) + s.accent(simplifyType(t.type, inputType, "…")));
 			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
 		},
 	});
@@ -529,17 +530,18 @@ export default async function (pi: ExtensionAPI) {
 			if (data._error) throw new Error(data._error);
 			const types = data.types || [];
 			if (types.length === 0) throw new Error(data.warning || "No types in hierarchy for: " + typePlain(params));
-			const lines = types.map((t: any) => t.type + (t.file ? "  " + relPath(t.file, ctx.cwd) + (t.line ? `:${t.line}` : "") : ""));
-			return result(plain.withWarning(lines.join("\n"), data.warning), { data, cwd: ctx.cwd });
+			const lines = types.map((t: any) => simplifyType(t.type, params.type, "…") + (t.file ? "  " + relPath(t.file, ctx.cwd) + (t.line ? `:${t.line}` : "") : ""));
+			return result(plain.withWarning(lines.join("\n"), data.warning), { data, cwd: ctx.cwd, inputType: params.type });
 		},
 		renderResult(r, ctx, theme) {
+			const inputType = (r.details as any)?.inputType as string | undefined;
 			return jdtResult(r, ctx, theme, { loading: "Working...", notFound: "Type not found." }, (data, cwd, s) => {
 				const types = data.types || [];
 				if (types.length === 0) {
 					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No types in hierarchy.");
 					return new Text("\n" + msg, 0, 0);
 				}
-				return types.map((t: any) => s.accent(t.type) + (t.file ? "  " + formatLocation(s, t.file, t.line, undefined, cwd) : "")).join("\n");
+				return types.map((t: any) => s.accent(simplifyType(t.type, inputType, "…")) + (t.file ? "  " + formatLocation(s, t.file, t.line, undefined, cwd) : "")).join("\n");
 			});
 		},
 	});
@@ -716,12 +718,14 @@ function enclosingLabel(enclosingType: string | undefined, enclosingMethod: stri
 // noise (the file path in the same line typically shows the package anyway). Uses the user's prefix
 // (everything before the last `.`) rather than guessing a package: `Outer.Inner` for a member class won't
 // accidentally match a package, since the resolved type starts with the real package.
-function simplifyType(type: string | undefined, inputType: string | undefined): string | undefined {
+// `marker` is prepended in place of the stripped prefix; in list outputs we pass "…" to flag elision and
+// distinguish stripped rows from rows in foreign packages that show their full FQN.
+function simplifyType(type: string | undefined, inputType: string | undefined, marker = ""): string | undefined {
 	if (typeof type !== "string" || typeof inputType !== "string") return type;
 	const dot = inputType.lastIndexOf(".");
 	if (dot <= 0) return type;
 	const prefix = inputType.substring(0, dot) + ".";
-	return type.startsWith(prefix) ? type.substring(prefix.length) : type;
+	return type.startsWith(prefix) ? marker + type.substring(prefix.length) : type;
 }
 
 function formatGrep(s: Style, rows: Array<{ file: string; line: number; content: string; isMatch?: boolean; enclosingType?: string; enclosingMethod?: string }>, cwd: string): string {
@@ -810,8 +814,9 @@ function renderMembers(s: Style, entries: any[], cwd: string, inputType?: string
 		const e = entries[i];
 		if (i > 0) parts.push("");
 		const label = i === 0 ? "" : (e.isInterface ? "Implements " : "Extends ");
-		// Strip user's prefix only from the primary entry; super/iface entries are typically in other packages.
-		const displayType = i === 0 ? simplifyType(e.type, inputType) : e.type;
+		// Primary entry is the user-requested type, so strip cleanly. Super/iface entries are list rows; on the
+		// rare occasion they share the input's package, mark with … to flag elision.
+		const displayType = i === 0 ? simplifyType(e.type, inputType) : simplifyType(e.type, inputType, "…");
 		let h = s.accent(`${label}${displayType}`);
 		if (e.file) h += "  " + s.filePath(relPath(e.file, cwd));
 		parts.push(h);
