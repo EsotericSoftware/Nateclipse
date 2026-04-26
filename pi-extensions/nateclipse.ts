@@ -841,7 +841,8 @@ function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean
 	type Section = { file: any; line: any; endLine: any; source: string; header: string };
 	const sections: Section[] = [];
 	const primaryType = simplifyType(data.type, inputType);
-	let primaryHeader = s.accent(primaryType) + s.white("#") + s.member(data.method);
+	// Method name is right there in the signature on the next line, no need to repeat it in the header.
+	let primaryHeader = s.accent(primaryType);
 	sections.push({ file: data.file, line: data.line, endLine: data.endLine, source: data.source || "", header: primaryHeader });
 	if (Array.isArray(data.supers)) {
 		for (const sup of data.supers) {
@@ -855,7 +856,7 @@ function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean
 					if (typeof line === "number") line += stripped.skipped;
 				}
 			}
-			sections.push({ file: sup.file, line, endLine: sup.endLine, source: src, header: s.accent(`${label}: ${sup.type}`) + s.white("#") + s.member(sup.method) });
+			sections.push({ file: sup.file, line, endLine: sup.endLine, source: src, header: s.accent(`${label}: ${sup.type}`) });
 		}
 	}
 	// Width shared across all sections so line numbers align.
