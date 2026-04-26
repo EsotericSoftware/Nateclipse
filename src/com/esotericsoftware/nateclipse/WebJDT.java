@@ -28,6 +28,7 @@ import org.eclipse.jdt.core.IMember;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.Signature;
 import org.eclipse.jdt.core.search.IJavaSearchConstants;
 import org.eclipse.jdt.core.search.SearchMatch;
@@ -283,9 +284,14 @@ public class WebJDT extends WebServer {
 		int emitted = 0;
 		for (var t : types) {
 			if (t.getFullyQualifiedName().equals("java.lang.Object")) continue;
+			if (!t.exists()) continue; // skip stale anonymous types (e.g., inside lambdas)
 			IMethod override = null;
 			if (methodName != null) {
-				override = findMethod(t, methodName, methodParamTypes);
+				try {
+					override = findMethod(t, methodName, methodParamTypes);
+				} catch (JavaModelException ex) {
+					continue; // skip types that fail to resolve
+				}
 				if (override == null) continue;
 			}
 
