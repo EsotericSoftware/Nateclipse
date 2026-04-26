@@ -235,11 +235,15 @@ public class WebJDT extends WebServer {
 
 			json.object();
 			json.set("file", fp);
-			if (match.getElement() instanceof IMethod enclosing) {
-				json.set("enclosingType", enclosing.getDeclaringType().getFullyQualifiedName());
+			if (match.getElement() instanceof IType enclosing) {
+				json.set("enclosingType", enclosing.getFullyQualifiedName());
+			} else if (match.getElement() instanceof IMethod enclosing) {
+				var declaring = enclosing.getDeclaringType();
+				if (declaring != null) json.set("enclosingType", declaring.getFullyQualifiedName());
 				json.set("enclosingMethod", enclosing.getElementName());
 			} else if (match.getElement() instanceof IMember enclosing) {
-				json.set("enclosingType", enclosing.getDeclaringType().getFullyQualifiedName());
+				var declaring = enclosing.getDeclaringType();
+				if (declaring != null) json.set("enclosingType", declaring.getFullyQualifiedName());
 			}
 			if (source != null) {
 				json.set("line", line);
