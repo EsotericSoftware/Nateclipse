@@ -28,7 +28,8 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
 
 /** Re-orders Java content-assist proposals so that:
  * <ol>
- * <li>Templates (eg {@code sout} -> {@code System.out.println()}) come first.
+ * <li>Method-stub generators (override method, getter/setter, record accessor, method declaration) come first when present.
+ * <li>Templates (eg {@code sout} -> {@code System.out.println()}) come next.
  * <li>Types declared in the current compilation unit come next.
  * <li>Then types already imported by the current compilation unit (explicit imports beat wildcards).
  * <li>Then types in the same package, same project, other workspace projects.
@@ -159,24 +160,38 @@ public class CompletionSort extends AbstractProposalSorter {
 	public int compare (ICompletionProposal p1, ICompletionProposal p2) {
 		// Strict tiered ordering, must be a total order or TimSort throws
 		// "Comparison method violates its general contract!".
-		// Tier 0: templates (eg "sout" -> "System.out.println()").
-		// Tier 1: type proposals, ordered by descending score.
-		// Tier 2: everything else (methods, fields, keywords), ordered by relevance.
+		// Tier 0: method-stub generators (override method, getter/setter, etc) - most useful in class body context.
+		// Tier 1: templates (eg "sout" -> "System.out.println()").
+		// Tier 2: type proposals, ordered by descending score.
+		// Tier 3: everything else (methods, fields, keywords), ordered by relevance.
 		int t1 = tier(p1);
 		int t2 = tier(p2);
 		if (t1 != t2) return t1 - t2;
-		if (t1 == 1) {
+		if (t1 == 2) {
 			Integer s1 = scoreOrNull(p1);
 			Integer s2 = scoreOrNull(p2);
-			// Both are tier 1, so both have non-null scores.
+			// Both are tier 2, so both have non-null scores.
 			if (!s1.equals(s2)) return s2.intValue() - s1.intValue();
 		}
 		return compareByRelevance(p1, p2);
 	}
 
 	private int tier (ICompletionProposal p) {
-		if (isTemplate(p)) return 0;
-		return scoreOrNull(p) != null ? 1 : 2;
+		if (isStubGenerator(p)) return 0;
+		if (isTemplate(p)) return 1;
+		return scoreOrNull(p) != null ? 2 : 3;
+	}
+
+	static private boolean isStubGenerator (ICompletionProposal p) {
+		if (p == null) return false;
+		// Internal JDT proposals (org.eclipse.jdt.internal.ui.text.java.*) that synthesize a method body
+		// or class member when invoked. These are highly contextual, only offered inside a class/anonymous
+		// class body, and the user almost always wants them above generic templates.
+		String cn = p.getClass().getName();
+		return cn.endsWith(".OverrideCompletionProposal") //
+			|| cn.endsWith(".MethodDeclarationCompletionProposal") //
+			|| cn.endsWith(".GetterSetterCompletionProposal") //
+			|| cn.endsWith(".RecordAccessorCompletionProposal");
 	}
 
 	static private boolean isTemplate (ICompletionProposal p) {
