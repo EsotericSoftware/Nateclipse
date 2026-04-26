@@ -225,16 +225,17 @@ export default async function (pi: ExtensionAPI) {
 			if (data._error) throw new Error(data._error + ": " + params.type);
 			const entries = data.entries || [];
 			if (!entries.length) throw new Error(data.warning || "Type has no members: " + params.type);
-			return result(plain.withWarning(renderMembers(plain, entries, ctx.cwd), data.warning), { data, cwd: ctx.cwd });
+			return result(plain.withWarning(renderMembers(plain, entries, ctx.cwd, params.type), data.warning), { data, cwd: ctx.cwd, inputType: params.type });
 		},
 		renderResult(r, ctx, theme) {
+			const inputType = (r.details as any)?.inputType as string | undefined;
 			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Type not found." }, (data, cwd, s) => {
 				const entries = data.entries || [];
 				if (!entries.length) {
 					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "Type has no members.");
 					return new Text("\n" + msg, 0, 0);
 				}
-				return renderMembers(s, entries, cwd);
+				return renderMembers(s, entries, cwd, inputType);
 			});
 		},
 	});
@@ -268,14 +269,15 @@ export default async function (pi: ExtensionAPI) {
 			// Single-match carries `source`; leave as-is. Multi-match is grouped { file, types: [], lines: [] } -- flatten to per-type rows.
 			if (rawMatches.length === 1 && rawMatches[0].source != null) {
 				const m = rawMatches[0];
-				const header = `${m.type}  ${relPath(m.file, ctx.cwd)}:${m.line}-${m.endLine}`;
+				const displayType = simplifyType(m.type, params.type);
+				const header = `${displayType}  ${relPath(m.file, ctx.cwd)}:${m.line}-${m.endLine}`;
 				const parts = [header, m.source];
 				if (m.truncated) {
 					const shown = m.endLine - m.line + 1;
 					parts.push("");
 					parts.push(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
 				}
-				return result(plain.withWarning(parts.join("\n"), data.warning), { single: m, warning: data.warning, cwd: ctx.cwd });
+				return result(plain.withWarning(parts.join("\n"), data.warning), { single: m, warning: data.warning, cwd: ctx.cwd, inputType: params.type });
 			}
 			const matches = rawMatches.flatMap((g: any) =>
 				(g.types || []).map((t: string, i: number) => ({ type: t, file: g.file, line: g.lines?.[i] }))
@@ -293,7 +295,8 @@ export default async function (pi: ExtensionAPI) {
 			if (r.details?.single) {
 				const m = r.details.single;
 				const cwd = r.details.cwd ?? "";
-				const header = s.accent(m.type) + "  " + formatLocation(s, m.file, m.line, m.endLine, cwd);
+				const displayType = simplifyType(m.type, (r.details as any).inputType);
+				const header = s.accent(displayType) + "  " + formatLocation(s, m.file, m.line, m.endLine, cwd);
 				const rendered = s.javaCode(stripIndent(m.source || ""));
 				const body = m.line
 					? (() => {
@@ -337,11 +340,13 @@ export default async function (pi: ExtensionAPI) {
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const data = await jdt("/java_method", params, signal);
 			if (data._error) throw new Error(data._error);
-			return result(plain.withWarning(renderMethod(plain, data, ctx.cwd), data.warning), { data, cwd: ctx.cwd });
+			const inputType = params.type;
+			return result(plain.withWarning(renderMethod(plain, data, ctx.cwd, false, inputType), data.warning), { data, cwd: ctx.cwd, inputType });
 		},
 		renderResult(r, ctx, theme) {
+			const inputType = (r.details as any)?.inputType as string | undefined;
 			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Method not found." },
-				(data, cwd, s) => renderMethod(s, data, cwd, true));
+				(data, cwd, s) => renderMethod(s, data, cwd, true, inputType));
 		},
 	});
 
@@ -561,12 +566,13 @@ export default async function (pi: ExtensionAPI) {
 			if (data._error) throw new Error(data._error);
 			if (data.total === 0) throw new Error(data.warning || "No callers for: " + typePlain(params));
 			const text = data.overloads && data.overloads.length > 1
-				? renderCallersByOverload(plain, data.callers, data.overloads, ctx.cwd, formatRefRowPlain)
+				? renderCallersByOverload(plain, data.callers, data.overloads, ctx.cwd, formatRefRowPlain, undefined, params.type)
 				: groupByFile(plain, data.callers, ctx.cwd, formatRefRowPlain);
 			const suffix = data.limited ? `\n\nShowing ${data.callers.length} of ${data.total}\nUse limit for more` : "";
-			return result(plain.withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd });
+			return result(plain.withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd, inputType: params.type });
 		},
 		renderResult(r, ctx, theme) {
+			const inputType = (r.details as any)?.inputType as string | undefined;
 			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found." }, (data, cwd, s) => {
 				if (data.total === 0) {
 					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No callers found.");
@@ -576,7 +582,7 @@ export default async function (pi: ExtensionAPI) {
 				const format = (row: any) => formatRefRowStyled(s, row, w);
 				const limitMsg = data.limited ? `Showing ${data.callers.length} of ${data.total}.` : undefined;
 				return data.overloads && data.overloads.length > 1
-					? renderCallersByOverload(s, data.callers, data.overloads, cwd, format, limitMsg)
+					? renderCallersByOverload(s, data.callers, data.overloads, cwd, format, limitMsg, inputType)
 					: groupByFile(s, data.callers, cwd, format, limitMsg);
 			});
 		},
@@ -706,6 +712,18 @@ function enclosingLabel(enclosingType: string | undefined, enclosingMethod: stri
 	return enclosingMethod ? `${simple}.${enclosingMethod}` : simple!;
 }
 
+// If the user already qualified the type in their input, strip that qualifier from output to cut redundant
+// noise (the file path in the same line typically shows the package anyway). Uses the user's prefix
+// (everything before the last `.`) rather than guessing a package: `Outer.Inner` for a member class won't
+// accidentally match a package, since the resolved type starts with the real package.
+function simplifyType(type: string | undefined, inputType: string | undefined): string | undefined {
+	if (typeof type !== "string" || typeof inputType !== "string") return type;
+	const dot = inputType.lastIndexOf(".");
+	if (dot <= 0) return type;
+	const prefix = inputType.substring(0, dot) + ".";
+	return type.startsWith(prefix) ? type.substring(prefix.length) : type;
+}
+
 function formatGrep(s: Style, rows: Array<{ file: string; line: number; content: string; isMatch?: boolean; enclosingType?: string; enclosingMethod?: string }>, cwd: string): string {
 	type Row = { line: number; content: string; isMatch?: boolean; enclosingType?: string; enclosingMethod?: string };
 	const byFile = new Map<string, Row[]>();
@@ -759,6 +777,7 @@ function renderCallersByOverload(
 	cwd: string,
 	formatItem: (r: any) => string,
 	limitMsg?: string,
+	inputType?: string,
 ): string {
 	const byOverload = new Map<string, any[]>();
 	for (const o of overloads) byOverload.set(o.signature, []);
@@ -771,7 +790,8 @@ function renderCallersByOverload(
 	for (const o of overloads) {
 		const rows = byOverload.get(o.signature) || [];
 		const countLabel = `${o.count} caller${o.count === 1 ? "" : "s"}`;
-		const header = s.accent(o.signature) + "  " + s.dim(countLabel);
+		const displaySig = simplifyType(o.signature, inputType);
+		const header = s.accent(displaySig) + "  " + s.dim(countLabel);
 		if (rows.length === 0) {
 			sections.push(header + (o.count > 0 ? "  " + s.dim("(not shown)") : ""));
 			continue;
@@ -782,7 +802,7 @@ function renderCallersByOverload(
 	return sections.join("\n\n");
 }
 
-function renderMembers(s: Style, entries: any[], cwd: string): string {
+function renderMembers(s: Style, entries: any[], cwd: string, inputType?: string): string {
 	const allMembers = entries.flatMap((e: any) => [...(e.fields || []), ...(e.methods || [])]);
 	const w = maxLineWidth(allMembers);
 	const parts: string[] = [];
@@ -790,7 +810,9 @@ function renderMembers(s: Style, entries: any[], cwd: string): string {
 		const e = entries[i];
 		if (i > 0) parts.push("");
 		const label = i === 0 ? "" : (e.isInterface ? "Implements " : "Extends ");
-		let h = s.accent(`${label}${e.type}`);
+		// Strip user's prefix only from the primary entry; super/iface entries are typically in other packages.
+		const displayType = i === 0 ? simplifyType(e.type, inputType) : e.type;
+		let h = s.accent(`${label}${displayType}`);
 		if (e.file) h += "  " + s.filePath(relPath(e.file, cwd));
 		parts.push(h);
 		if (e.fields?.length) {
@@ -807,13 +829,14 @@ function renderMembers(s: Style, entries: any[], cwd: string): string {
 	return parts.join("\n");
 }
 
-function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean = false): string {
+function renderMethod(s: Style, data: any, cwd: string, showLineNumbers: boolean = false, inputType?: string): string {
 	// Supers from JARs (JDK, libraries) dump huge javadoc we almost never need. Strip the leading /** ... */
 	// and shift the start line so line numbers stay accurate. Primary method is always shown verbatim -
 	// the user explicitly asked for it.
 	type Section = { file: any; line: any; endLine: any; source: string; header: string };
 	const sections: Section[] = [];
-	let primaryHeader = s.accent(data.type) + s.white("#") + s.member(data.method);
+	const primaryType = simplifyType(data.type, inputType);
+	let primaryHeader = s.accent(primaryType) + s.white("#") + s.member(data.method);
 	sections.push({ file: data.file, line: data.line, endLine: data.endLine, source: data.source || "", header: primaryHeader });
 	if (Array.isArray(data.supers)) {
 		for (const sup of data.supers) {
