@@ -237,9 +237,16 @@ function fuzzyFind(fileContent: string, oldText: string): { origStart: number; o
 async function enrichNotFoundError(text: string, params: EditParams, cwd: string): Promise<string> {
 	try {
 		const content = await readFileNormalized(cwd, params.path ?? "");
+		const allLines = content.split("\n");
 
-		const sections: string[] = [];
-		for (const edit of params.edits ?? []) {
+		// One candidate per failing edit that has a usable fuzzy match.
+		type Entry = { editIndex: number; anchorLine: number };
+		type Candidate = { entries: Entry[]; ctxStart: number; ctxEnd: number };
+		const candidates: Candidate[] = [];
+
+		const edits = params.edits ?? [];
+		for (let i = 0; i < edits.length; i++) {
+			const edit = edits[i];
 			if (!edit?.oldText) continue;
 			// Also normalize oldText CRLF so we match against the normalized content.
 			const oldText = edit.oldText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -249,21 +256,40 @@ async function enrichNotFoundError(text: string, params: EditParams, cwd: string
 			const match = fuzzyFind(content, oldText);
 			if (!match || match.score < 0.3) continue;
 
-			// Extract the matched region with line numbers.
-			let lineNum = 1;
-			for (let i = 0; i < match.origStart; i++) if (content[i] === "\n") lineNum++;
+			let anchorLine = 1;
+			for (let j = 0; j < match.origStart; j++) if (content[j] === "\n") anchorLine++;
 
 			// Show 2 lines before + matched region + 1 line after.
-			const allLines = content.split("\n");
 			const matchedLineCount = content.substring(match.origStart, match.origEnd).split("\n").length;
-			const ctxStart = Math.max(0, lineNum - 1 - 2);
-			const ctxEnd = Math.min(allLines.length, lineNum - 1 + matchedLineCount + 1);
-			const numbered = allLines.slice(ctxStart, ctxEnd).map((l, i) => `${ctxStart + i + 1} ${l}`).join("\n");
+			const ctxStart = Math.max(0, anchorLine - 1 - 2);
+			const ctxEnd = Math.min(allLines.length, anchorLine - 1 + matchedLineCount + 1);
 
-			sections.push(`Closest match at line ${lineNum}:\n${numbered}`);
+			candidates.push({ entries: [{ editIndex: i, anchorLine }], ctxStart, ctxEnd });
 		}
 
-		if (!sections.length) return text;
+		if (!candidates.length) return text;
+
+		// Merge candidates whose context windows overlap or touch so we don't repeat the same lines.
+		candidates.sort((a, b) => a.ctxStart - b.ctxStart);
+		const merged: Candidate[] = [];
+		for (const c of candidates) {
+			const last = merged[merged.length - 1];
+			if (last && c.ctxStart <= last.ctxEnd) {
+				last.ctxEnd = Math.max(last.ctxEnd, c.ctxEnd);
+				last.entries.push(...c.entries);
+			} else {
+				merged.push({ entries: [...c.entries], ctxStart: c.ctxStart, ctxEnd: c.ctxEnd });
+			}
+		}
+
+		const sections = merged.map(c => {
+			const numbered = allLines.slice(c.ctxStart, c.ctxEnd).map((l, i) => `${c.ctxStart + i + 1} ${l}`).join("\n");
+			const label = c.entries.length === 1
+				? `Closest match at line ${c.entries[0].anchorLine}:`
+				: `Closest match for ${c.entries.map(e => `edits[${e.editIndex}] (line ${e.anchorLine})`).join(", ")}:`;
+			return `${label}\n${numbered}`;
+		});
+
 		return text + "\n\n" + sections.join("\n\n");
 	} catch (err) {
 		console.debug("enrichNotFoundError failed:", err);
