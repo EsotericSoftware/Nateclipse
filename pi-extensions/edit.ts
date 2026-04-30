@@ -5,6 +5,7 @@
 
 import type { EditToolDetails, ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createEditToolDefinition } from "@mariozechner/pi-coding-agent";
+import { Container } from "@mariozechner/pi-tui";
 
 import { readFile } from "fs/promises";
 import { resolve } from "path";
@@ -46,13 +47,31 @@ export default async function (pi: ExtensionAPI) {
 		renderCall: originalRenderCall
 			? (params, theme, context) => {
 				const relParams = rewriteArgs(params, context.cwd);
-				return originalRenderCall(relParams, theme, { ...context, args: relParams });
+				const relContext = { ...context, args: relParams };
+				seedSettledErrorPreview(relContext);
+				return originalRenderCall(relParams, theme, relContext);
 			}
 			: undefined,
 		renderResult: originalRenderResult
 			? (result, options, theme, context) => {
 				const relArgs = rewriteArgs(context.args, context.cwd);
-				return originalRenderResult(result, options, theme, { ...context, args: relArgs });
+				const relContext = { ...context, args: relArgs };
+
+				// The built-in edit renderer leaves the pre-execute preview error in the call body and
+				// renders the execute error below it. Since execute errors are enriched here, that made
+				// failures look duplicated. Promote the enriched result text into the call preview and
+				// return an empty result component.
+				if (context.isError && originalRenderCall) {
+					const errorText = getResultText(result);
+					if (errorText && setSettledErrorPreview(relContext, errorText)) {
+						originalRenderCall(relArgs, theme, relContext);
+						const component = context.lastComponent instanceof Container ? context.lastComponent : new Container();
+						component.clear();
+						return component;
+					}
+				}
+
+				return originalRenderResult(result, options, theme, relContext);
 			}
 			: undefined,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -71,7 +90,6 @@ export default async function (pi: ExtensionAPI) {
 	});
 }
 
-/** Find every occurrence of `needle` in `haystack`, returning 1-based line numbers. */
 function relPath(absPath: string, cwd: string): string {
 	// Normalize separators for comparison; Windows Node gives backslashes in cwd, callers often pass forward slashes.
 	const a = absPath.replace(/\\/g, "/");
@@ -84,6 +102,56 @@ function relPath(absPath: string, cwd: string): string {
 	return a;
 }
 
+function getRenderablePreviewInput(args: any): { path: string; edits: EditOp[] } | null {
+	if (!args) return null;
+	const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : null;
+	if (!path) return null;
+
+	if (
+		Array.isArray(args.edits) &&
+		args.edits.length > 0 &&
+		args.edits.every((edit: EditOp) => typeof edit?.oldText === "string" && typeof edit?.newText === "string")
+	) {
+		return { path, edits: args.edits };
+	}
+
+	if (typeof args.oldText === "string" && typeof args.newText === "string")
+		return { path, edits: [{ oldText: args.oldText, newText: args.newText }] };
+
+	return null;
+}
+
+function getEditArgsKey(args: any): string | undefined {
+	const input = getRenderablePreviewInput(args);
+	return input ? JSON.stringify({ path: input.path, edits: input.edits }) : undefined;
+}
+
+function getResultText(result: any): string {
+	return (result?.content ?? [])
+		.filter((c: any) => c?.type === "text")
+		.map((c: any) => c.text || "")
+		.join("\n");
+}
+
+function seedSettledErrorPreview(context: any): void {
+	const settled = context.state?.nateclipseSettledError;
+	if (!context.isError || !settled || settled.argsKey !== getEditArgsKey(context.args)) return;
+	setSettledErrorPreview(context, settled.text);
+}
+
+function setSettledErrorPreview(context: any, errorText: string): boolean {
+	const callComponent = context.state?.callComponent;
+	if (!callComponent) return false;
+	const argsKey = getEditArgsKey(context.args);
+	context.state.nateclipseSettledError = { argsKey, text: errorText };
+	callComponent.preview = { error: errorText };
+	callComponent.previewArgsKey = argsKey;
+	callComponent.previewPending = false;
+	callComponent.settledError = true;
+	return true;
+}
+
+/** Find every occurrence of `needle` in `haystack`, returning 1-based line numbers. */
 function findLineNumbers(haystack: string, needle: string): number[] {
 	const lines: number[] = [];
 	let from = 0;
