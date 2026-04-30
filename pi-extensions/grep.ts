@@ -20,7 +20,7 @@ export default async function (pi: ExtensionAPI) {
 		name: "grep",
 		label: "grep",
 		promptSnippet: "Search file contents with grep",
-		description: "Runs grep. All grep flags supported. Specify -E if using |",
+		description: "Runs grep. All grep flags supported. Unescaped | adds -E unless -E/-F/-P is present",
 		promptGuidelines: ["Use the grep tool instead of bash grep"],
 		parameters: Type.Object({
 			pattern: Type.String({ description: "Grep pattern" }),
@@ -31,13 +31,12 @@ export default async function (pi: ExtensionAPI) {
 			const s = style(theme);
 			let text = s.tool("grep") + " " + s.yellow(params.pattern);
 			if (params.path) text += " " + s.accent(relPath(params.path, context.cwd));
-			text += " " + s.yellow(params.flags || "-n");
+			text += " " + s.yellow(effectiveGrepFlags(params.pattern, splitFlags(params.flags)).join(" "));
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const searchPath = params.path || ".";
-			const flagStr = params.flags || "-n";
-			const userFlags = flagStr.split(/\s+/).filter(Boolean);
+			const userFlags = effectiveGrepFlags(params.pattern, splitFlags(params.flags));
 
 			// Detect dir vs file for output formatting + auto -r injection.
 			let isDir = false;
@@ -79,28 +78,6 @@ export default async function (pi: ExtensionAPI) {
 				let msg = `No matches for: ${cmd}`;
 				if (code === 2 && stderr) msg += `\n${stderr.trim().split("\n")[0].replace(/^grep:\s*/, "")}`;
 
-				// BRE footgun: `|` without -E/-P is a literal pipe. `\|` is GNU BRE alternation so don't warn if escaped.
-				const hasExtended = userFlags.some((f) =>
-					(f.startsWith("-") && !f.startsWith("--") && /[EP]/.test(f)) ||
-					f === "--extended-regexp" || f === "--perl-regexp",
-				);
-				const hasUnescapedPipe = /(^|[^\\])\|/.test(params.pattern);
-				if (code !== 2 && !hasExtended && hasUnescapedPipe) {
-					const retry = await runGrep(["-E", ...allFlags], params.pattern, searchPath, MAX_MATCHES, ctx.cwd, rawMode, signal);
-					const retryMatches = rawMode ? retry.rawLines.length : retry.rows.filter((r) => r.isMatch).length;
-					if (retryMatches > 0 && retryMatches <= 10 && !retry.matchLimitReached) {
-						const body = rawMode
-							? formatRaw(plain, retry.rawLines, ctx.cwd)
-							: formatGrep(plain, retry.rows, ctx.cwd);
-						msg += `\nWith -E:\n${body}`;
-					} else if (retryMatches > 0) {
-						msg += `\nWith -E: ${retryMatches} match${retryMatches === 1 ? "" : "es"}${retry.matchLimitReached ? "+" : ""}`;
-					} else if (retry.code === 2 && retry.stderr) {
-						msg += `\nWith -E: ${retry.stderr.trim().split("\n")[0].replace(/^grep:\s*/, "")}`;
-					} else {
-						msg += `\nWith -E: 0 matches`;
-					}
-				}
 				throw new Error(msg);
 			}
 
@@ -214,6 +191,40 @@ async function runGrep(
 			resolve({ rows, rawLines, stderr: stderr.replace(/\r/g, ""), code: exit, matchLimitReached, linesTruncated });
 		});
 	});
+}
+
+function splitFlags(flags: string | undefined): string[] {
+	const parts = (flags || "-n").split(/\s+/).filter(Boolean);
+	return parts.length ? parts : ["-n"];
+}
+
+function effectiveGrepFlags(pattern: string, flags: string[]): string[] {
+	if (!hasBarePipe(pattern) || hasGrepRegexModeFlag(flags)) return flags;
+	const out = [...flags];
+	const endOfOptions = out.indexOf("--");
+	if (endOfOptions >= 0) out.splice(endOfOptions, 0, "-E");
+	else out.push("-E");
+	return out;
+}
+
+function hasGrepRegexModeFlag(flags: string[]): boolean {
+	return flags.some((f) =>
+		(f.startsWith("-") && !f.startsWith("--") && /[EFP]/.test(f.slice(1))) ||
+		f === "--extended-regexp" || f === "--fixed-strings" || f === "--perl-regexp"
+	);
+}
+
+function hasBarePipe(pattern: string): boolean {
+	let escaped = false;
+	let inClass = false;
+	for (const ch of pattern) {
+		if (escaped) { escaped = false; continue; }
+		if (ch === "\\") { escaped = true; continue; }
+		if (ch === "[" && !inClass) { inClass = true; continue; }
+		if (ch === "]" && inClass) { inClass = false; continue; }
+		if (ch === "|" && !inClass) return true;
+	}
+	return false;
 }
 
 function buildNotices(matchLimitReached: boolean | undefined, linesTruncated: boolean | undefined): string {

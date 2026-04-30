@@ -27,7 +27,7 @@ export default async function (pi: ExtensionAPI) {
 		name: "java_grep",
 		label: "Java Grep",
 		promptSnippet: "Grep source files of Java types matched by name or pattern",
-		description: "Resolves type to file, then runs grep. All grep flags supported. Specify -E if using |",
+		description: "Resolves type to file, then runs grep. All grep flags supported. Unescaped | adds -E unless -E/-F/-P is present",
 		promptGuidelines: [
 			"The java_* tools are aware of types, references, hierarchies. Use them over bash/grep/find for Java source",
 			"Use java_grep instead of grep to find text in Java source",
@@ -40,7 +40,8 @@ export default async function (pi: ExtensionAPI) {
 		}),
 		renderCall(params, theme) {
 			const s = style(theme);
-			return new Text(s.tool("java_grep") + " " + s.yellow(params.pattern) + " " + s.accent(params.type) + s.extra("project", params.project) + " " + s.yellow(params.flags || "-n"), 0, 0);
+			const flags = effectiveGrepFlags(params.pattern, splitFlags(params.flags)).join(" ");
+			return new Text(s.tool("java_grep") + " " + s.yellow(params.pattern) + " " + s.accent(params.type) + s.extra("project", params.project) + " " + s.yellow(flags), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			// Multi-match /java_type responses are grouped as { file, types: [...] }. Skip lines=true so server avoids buffer loads.
@@ -55,8 +56,7 @@ export default async function (pi: ExtensionAPI) {
 					"Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
 			}
 
-			const flagStr = params.flags || "-n";
-			const flagArgs = flagStr.split(/\s+/).filter(Boolean);
+			const flagArgs = effectiveGrepFlags(params.pattern, splitFlags(params.flags));
 			// Flags that change grep's output format so our "file:line:content" parser wouldn't apply.
 			// -l/-L: file list. -c: file:count. When present we capture raw stdout instead.
 			const rawMode = flagArgs.some((f) =>
@@ -71,46 +71,8 @@ export default async function (pi: ExtensionAPI) {
 				const MAX_FILES_SHOWN = 3;
 				for (const f of files.slice(0, MAX_FILES_SHOWN)) msg += `\n${relPath(f, ctx.cwd)}`;
 				if (files.length > MAX_FILES_SHOWN) msg += `\n...+${files.length - MAX_FILES_SHOWN} more`;
-				// BRE footgun: `|` without -E/-P is a literal pipe. `\|` is GNU BRE alternation so don't warn if escaped.
-				const hasExtended = flagArgs.some((f) =>
-					(f.startsWith("-") && !f.startsWith("--") && /[EP]/.test(f)) ||
-					f === "--extended-regexp" || f === "--perl-regexp"
-				);
-				const hasUnescapedPipe = /(^|[^\\])\|/.test(params.pattern);
-				if (!hasExtended && hasUnescapedPipe) {
-					// Probe whether -E would have helped, so the model knows which way to go next.
-					const retry = await runGrepChunked(["-E", ...flagArgs], params.pattern, files, signal);
-					const retryOut = retry.stdout.replace(/\r/g, "").trim();
-					if (retryOut) {
-						if (rawMode) {
-							const retryLines = retryOut.split("\n").filter((l) => l.length > 0);
-							const n = retryLines.length;
-							if (n > 0 && n <= 10) {
-								msg += `\nWith -E:\n${formatRawGrep(plain, retryLines, ctx.cwd)}`;
-							} else {
-								msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
-							}
-						} else {
-							const retryRows: Array<{ file: string; line: number; content: string; isMatch: boolean }> = [];
-							for (const l of retryOut.split("\n")) {
-								if (!l || l === "--") continue;
-								const m = l.match(/^(.+?)([-:])(\d+)\2(.*)$/);
-								if (!m) continue;
-								retryRows.push({ file: m[1], line: parseInt(m[3]), content: m[4], isMatch: m[2] === ":" });
-							}
-							const n = retryRows.filter((r) => r.isMatch).length;
-							if (n > 0 && n <= 10) {
-								msg += `\nWith -E:\n${formatGrep(plain, retryRows, ctx.cwd)}`;
-							} else {
-								msg += `\nWith -E: ${n} match${n === 1 ? "" : "es"}`;
-							}
-						}
-					} else {
-						const err = (retry.stderr || "").replace(/\r/g, "").trim().split("\n")[0];
-						// grep exit 2 = error, 1 = no match, 0 = match.
-						if (retry.code === 2 && err) msg += `\nWith -E: ${err.replace(/^grep:\s*/, "")}`;
-						else msg += `\nWith -E: 0 matches`;
-					}
+				if (grepResult.code === 2 && grepResult.stderr) {
+					msg += `\n${grepResult.stderr.replace(/\r/g, "").trim().split("\n")[0].replace(/^grep:\s*/, "")}`;
 				}
 				throw new Error(msg);
 			}
@@ -681,6 +643,42 @@ async function enrichEnclosing(rows: Array<{ file: string; line: number; enclosi
 		if (info?.type) r.enclosingType = info.type;
 		if (info?.method) r.enclosingMethod = info.method;
 	}
+}
+
+// ---- Grep helpers ----
+
+function splitFlags(flags: string | undefined): string[] {
+	const parts = (flags || "-n").split(/\s+/).filter(Boolean);
+	return parts.length ? parts : ["-n"];
+}
+
+function effectiveGrepFlags(pattern: string, flags: string[]): string[] {
+	if (!hasBarePipe(pattern) || hasGrepRegexModeFlag(flags)) return flags;
+	const out = [...flags];
+	const endOfOptions = out.indexOf("--");
+	if (endOfOptions >= 0) out.splice(endOfOptions, 0, "-E");
+	else out.push("-E");
+	return out;
+}
+
+function hasGrepRegexModeFlag(flags: string[]): boolean {
+	return flags.some((f) =>
+		(f.startsWith("-") && !f.startsWith("--") && /[EFP]/.test(f.slice(1))) ||
+		f === "--extended-regexp" || f === "--fixed-strings" || f === "--perl-regexp"
+	);
+}
+
+function hasBarePipe(pattern: string): boolean {
+	let escaped = false;
+	let inClass = false;
+	for (const ch of pattern) {
+		if (escaped) { escaped = false; continue; }
+		if (ch === "\\") { escaped = true; continue; }
+		if (ch === "[" && !inClass) { inClass = true; continue; }
+		if (ch === "]" && inClass) { inClass = false; continue; }
+		if (ch === "|" && !inClass) return true;
+	}
+	return false;
 }
 
 // ---- Formatters ----
