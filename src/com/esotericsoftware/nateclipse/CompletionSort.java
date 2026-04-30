@@ -22,6 +22,17 @@ import org.eclipse.jdt.core.IPackageDeclaration;
 import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.ITypeHierarchy;
 import org.eclipse.jdt.core.JavaModelException;
+import org.eclipse.jdt.core.dom.AST;
+import org.eclipse.jdt.core.dom.ASTNode;
+import org.eclipse.jdt.core.dom.ASTParser;
+import org.eclipse.jdt.core.dom.ASTVisitor;
+import org.eclipse.jdt.core.dom.Initializer;
+import org.eclipse.jdt.core.dom.LambdaExpression;
+import org.eclipse.jdt.core.dom.MethodDeclaration;
+import org.eclipse.jdt.core.dom.NodeFinder;
+import org.eclipse.jdt.core.dom.SingleVariableDeclaration;
+import org.eclipse.jdt.core.dom.VariableDeclaration;
+import org.eclipse.jdt.core.dom.VariableDeclarationFragment;
 import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jdt.ui.text.java.AbstractProposalSorter;
 import org.eclipse.jdt.ui.text.java.ContentAssistInvocationContext;
@@ -41,18 +52,15 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
 
 /** Re-orders Java content-assist proposals so that:
  * <ol>
- * <li>Method-stub generators (override method, getter/setter, record accessor, method declaration) come first when present.
- * <li>Methods and fields declared in (or inherited by) the type enclosing the completion offset come next.
- * <li>Templates (eg {@code sout} -> {@code System.out.println()}) come next.
- * <li>Types declared in the current compilation unit come next.
- * <li>Then types already imported by the current compilation unit (explicit imports beat wildcards).
- * <li>Then types in the same package, same project, other workspace projects.
- * <li>Then workspace JARs.
- * <li>Then commonly-used JDK types, then the rest of the JDK.
+ * <li>Method-stub generators (override method, getter/setter, record accessor, method declaration).
+ * <li>Local variables declared <em>above</em> the cursor in the enclosing executable scope, ordered nearest-first.
+ * <li>Parameters of the enclosing method/lambda/etc, in declaration order.
+ * <li>Local variables declared <em>below</em> the cursor (eg in following statements), nearest-first.
+ * <li>Methods and fields declared in (or inherited by) the enclosing type.
+ * <li>Templates (eg {@code sout} -> {@code System.out.println()}).
+ * <li>Type proposals, scored: types declared in the current CU > imported > same package > workspace > common JDK > rest.
+ * <li>Everything else (keywords, non-matching members from elsewhere), by relevance.
  * </ol>
- * Non-type, non-template proposals (methods, fields, keywords) that aren't members of the enclosing type keep their relative
- * order via relevance, but sort below scored type proposals.
- * <p>
  * <b>Why context is rebuilt lazily in {@link #compare}:</b> JDT registers this {@link AbstractProposalSorter} with the JFace
  * {@link org.eclipse.jface.text.contentassist.ContentAssistant} via {@code setSorter}, which only calls {@code compare} —
  * {@code beginSorting} / {@code endSorting} are <em>never</em> invoked along that path. So we instead refresh per-session
@@ -99,6 +107,16 @@ public class CompletionSort extends AbstractProposalSorter {
 	 * members plus inherited members from supertypes excluding {@link Object}, plus members of any outer/declaring type for
 	 * inner-class contexts). Empty when the completion is not inside a type body. */
 	private Set<String> enclosingTypeMembers = Collections.emptySet();
+	/** Local variable name -> source start offset, for variables declared <em>before</em> the cursor in the enclosing
+	 * executable scope. Used to surface in-scope locals just below stub generators, sorted by descending position so the
+	 * nearest declaration wins. */
+	private Map<String, Integer> localsAbove = Collections.emptyMap();
+	/** Parameter name -> source start offset, for parameters of the enclosing {@link MethodDeclaration} or
+	 * {@link LambdaExpression}. Sorted ascending (declaration order) within their tier. */
+	private Map<String, Integer> parameters = Collections.emptyMap();
+	/** Local variable name -> source start offset, for variables declared <em>after</em> the cursor (eg used in unfinished
+	 * forward references). Sorted ascending so the nearest declaration wins. */
+	private Map<String, Integer> localsBelow = Collections.emptyMap();
 	private Set<String> importedTypes = Collections.emptySet();
 	private Set<String> importedPackages = Collections.emptySet();
 
@@ -113,6 +131,10 @@ public class CompletionSort extends AbstractProposalSorter {
 
 	/** Proposal identity -> computed score. Reset on each context refresh. */
 	private final Map<ICompletionProposal, Integer> scoreCache = new HashMap<>();
+	/** Proposal identity -> leading identifier (proposal name). Reset on each context refresh. */
+	private final Map<ICompletionProposal, String> nameCache = new HashMap<>();
+	/** Proposal identity -> computed tier. Reset on each context refresh. */
+	private final Map<ICompletionProposal, Integer> tierCache = new HashMap<>();
 
 	@Override
 	public void beginSorting (ContentAssistInvocationContext context) {
@@ -156,10 +178,15 @@ public class CompletionSort extends AbstractProposalSorter {
 
 	private void refreshFor (ICompilationUnit cu, int offset) {
 		scoreCache.clear();
+		nameCache.clear();
+		tierCache.clear();
 		activeProject = null;
 		activePackage = null;
 		currentCuTypes = Collections.emptySet();
 		enclosingTypeMembers = Collections.emptySet();
+		localsAbove = Collections.emptyMap();
+		parameters = Collections.emptyMap();
+		localsBelow = Collections.emptyMap();
 		importedTypes = Collections.emptySet();
 		importedPackages = Collections.emptySet();
 		debugProposalsLogged = 0;
@@ -183,6 +210,7 @@ public class CompletionSort extends AbstractProposalSorter {
 				debugEnclosingType = type;
 				enclosingTypeMembers = collectAccessibleMembers(type);
 			}
+			collectScopeLocals(cu, offset);
 		} catch (Exception ex) {
 			log.error("CompletionSort.refreshFor failed", ex);
 		}
@@ -192,7 +220,74 @@ public class CompletionSort extends AbstractProposalSorter {
 				+ ", enclosingType="
 				+ (debugEnclosingType == null ? "null" : debugEnclosingType.getFullyQualifiedName('.')) //
 				+ ", memberCount=" + enclosingTypeMembers.size() //
+				+ ", paramCount=" + parameters.size() + " " + parameters.keySet() //
+				+ ", localsAbove=" + localsAbove.keySet() //
+				+ ", localsBelow=" + localsBelow.keySet() //
 				+ ", members=" + enclosingTypeMembers);
+		}
+	}
+
+	/** Parses the working-copy AST of {@code cu}, finds the executable scope (method / initializer / lambda) enclosing
+	 * {@code offset}, and populates {@link #parameters}, {@link #localsAbove}, and {@link #localsBelow}. The AST parse
+	 * happens once per session in {@link #refreshFor}, not per proposal. */
+	private void collectScopeLocals (ICompilationUnit cu, int offset) {
+		try {
+			ASTParser parser = ASTParser.newParser(AST.getJLSLatest());
+			parser.setSource(cu);
+			parser.setKind(ASTParser.K_COMPILATION_UNIT);
+			parser.setResolveBindings(false);
+			parser.setStatementsRecovery(true);
+			ASTNode root = parser.createAST(null);
+			if (!(root instanceof org.eclipse.jdt.core.dom.CompilationUnit ast)) return;
+			ASTNode at = NodeFinder.perform(ast, offset, 0);
+			ASTNode scope = at;
+			while (scope != null && !(scope instanceof MethodDeclaration) && !(scope instanceof Initializer)
+				&& !(scope instanceof LambdaExpression)) {
+				scope = scope.getParent();
+			}
+			if (scope == null) return;
+			Map<String, Integer> params = new HashMap<>();
+			Map<String, Integer> above = new HashMap<>();
+			Map<String, Integer> below = new HashMap<>();
+			// Parameters of the enclosing executable.
+			if (scope instanceof MethodDeclaration md) {
+				for (Object o : md.parameters()) {
+					if (o instanceof SingleVariableDeclaration p)
+						params.put(p.getName().getIdentifier(), Integer.valueOf(p.getStartPosition()));
+				}
+			} else if (scope instanceof LambdaExpression le) {
+				for (Object o : le.parameters()) {
+					if (o instanceof VariableDeclaration vd)
+						params.put(vd.getName().getIdentifier(), Integer.valueOf(vd.getStartPosition()));
+				}
+			}
+			// Locals declared anywhere inside the scope's body (visiting nested blocks; for-loop, try-with-resources,
+			// catch parameters, pattern variables, etc all appear as VariableDeclarationFragment or SingleVariableDeclaration).
+			final ASTNode finalScope = scope;
+			scope.accept(new ASTVisitor() {
+				@Override
+				public boolean visit (VariableDeclarationFragment node) {
+					put(node.getName().getIdentifier(), node.getStartPosition());
+					return true;
+				}
+
+				@Override
+				public boolean visit (SingleVariableDeclaration node) {
+					// Skip the parameters of the enclosing scope itself; already collected into `params` above.
+					if (node.getParent() != finalScope) put(node.getName().getIdentifier(), node.getStartPosition());
+					return true;
+				}
+
+				private void put (String name, int pos) {
+					Map<String, Integer> map = pos < offset ? above : below;
+					map.putIfAbsent(name, Integer.valueOf(pos));
+				}
+			});
+			parameters = params;
+			localsAbove = above;
+			localsBelow = below;
+		} catch (Exception ex) {
+			log.error("CompletionSort.collectScopeLocals failed", ex);
 		}
 	}
 
@@ -265,54 +360,76 @@ public class CompletionSort extends AbstractProposalSorter {
 	@Override
 	public int compare (ICompletionProposal p1, ICompletionProposal p2) {
 		ensureContext();
-		// Strict tiered ordering, must be a total order or TimSort throws
-		// "Comparison method violates its general contract!".
-		// Tier 0: method-stub generators (override method, getter/setter, etc) - most useful in class body context.
-		// Tier 1: methods/fields declared in the current compilation unit's types.
-		// Tier 2: templates (eg "sout" -> "System.out.println()").
-		// Tier 3: type proposals, ordered by descending score.
-		// Tier 4: everything else (methods, fields, keywords), ordered by relevance.
+		// Strict tiered ordering. Must be a total order or TimSort throws "Comparison method violates its general contract!".
+		// 0: method-stub generators (override, getter/setter, etc).
+		// 1: locals declared above the cursor (sub-sorted by source position descending = nearest first).
+		// 2: parameters of the enclosing method/lambda (sub-sorted by declaration order).
+		// 3: locals declared below the cursor (sub-sorted ascending = nearest first).
+		// 4: methods/fields accessible from the enclosing type (declared + inherited + outer-class).
+		// 5: templates.
+		// 6: type proposals, sub-sorted by descending score.
+		// 7: everything else, by relevance.
 		int t1 = tier(p1);
 		int t2 = tier(p2);
 		if (t1 != t2) return t1 - t2;
-		if (t1 == 3) {
+		if (t1 == 1 || t1 == 2 || t1 == 3) {
+			Map<String, Integer> map = t1 == 1 ? localsAbove : t1 == 2 ? parameters : localsBelow;
+			Integer pos1 = map.get(nameOf(p1));
+			Integer pos2 = map.get(nameOf(p2));
+			if (pos1 != null && pos2 != null) {
+				// Tier 1 (above): nearer = larger position; descending. Tier 2/3: ascending.
+				int diff = t1 == 1 ? Integer.compare(pos2.intValue(), pos1.intValue())
+					: Integer.compare(pos1.intValue(), pos2.intValue());
+				if (diff != 0) return diff;
+			}
+		}
+		if (t1 == 6) {
 			Integer s1 = scoreOrNull(p1);
 			Integer s2 = scoreOrNull(p2);
-			// Both are tier 3, so both have non-null scores.
 			if (!s1.equals(s2)) return s2.intValue() - s1.intValue();
 		}
 		return compareByRelevance(p1, p2);
 	}
 
 	private int tier (ICompletionProposal p) {
+		Integer cached = tierCache.get(p);
+		if (cached != null) return cached.intValue();
 		int t;
 		if (isStubGenerator(p))
 			t = 0;
-		else if (isCurrentCuMember(p))
-			t = 1;
-		else if (isTemplate(p))
-			t = 2;
-		else
-			t = scoreOrNull(p) != null ? 3 : 4;
+		else {
+			String name = nameOf(p);
+			if (!name.isEmpty() && localsAbove.containsKey(name))
+				t = 1;
+			else if (!name.isEmpty() && parameters.containsKey(name))
+				t = 2;
+			else if (!name.isEmpty() && localsBelow.containsKey(name))
+				t = 3;
+			else if (!name.isEmpty() && enclosingTypeMembers.contains(name))
+				t = 4;
+			else if (isTemplate(p))
+				t = 5;
+			else
+				t = scoreOrNull(p) != null ? 6 : 7;
+		}
+		tierCache.put(p, Integer.valueOf(t));
 		if (DEBUG && debugProposalsLogged < 30) {
 			debugProposalsLogged++;
-			String d = safeDisplay(p);
-			String name = leadingIdentifier(d);
-			log.info("CompletionSort.tier=" + t + " name=" + name + " classMatch="
-				+ (name != null && enclosingTypeMembers.contains(name)) + " class=" + p.getClass().getSimpleName() + " display="
-				+ d);
+			log.info("CompletionSort.tier=" + t + " name=" + nameOf(p) + " class=" + p.getClass().getSimpleName() + " display="
+				+ safeDisplay(p));
 		}
 		return t;
 	}
 
-	/** True if {@code p}'s leading identifier matches the name of a field or method accessible from the {@link IType} that
-	 * encloses the completion offset. The enclosing type and its accessible members are precomputed in
-	 * {@link #ensureContext}, so this avoids any reflection into JDT internals or fragile parsing of the proposal's
-	 * display-string qualifier. */
-	private boolean isCurrentCuMember (ICompletionProposal p) {
-		if (enclosingTypeMembers.isEmpty()) return false;
+	/** Cached lookup of the proposal's leading identifier (the proposal name). Empty string is used as a sentinel for
+	 * "no identifier" so we can distinguish from "not yet computed" via the cache miss. */
+	private String nameOf (ICompletionProposal p) {
+		String cached = nameCache.get(p);
+		if (cached != null) return cached;
 		String name = leadingIdentifier(safeDisplay(p));
-		return name != null && enclosingTypeMembers.contains(name);
+		if (name == null) name = "";
+		nameCache.put(p, name);
+		return name;
 	}
 
 	/** Extracts the longest leading run of Java identifier characters from {@code s}. Used to recover the proposal's
