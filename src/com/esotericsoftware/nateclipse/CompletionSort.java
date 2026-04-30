@@ -7,31 +7,35 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.Platform;
+import org.eclipse.jdt.core.ElementChangedEvent;
 import org.eclipse.jdt.core.Flags;
 import org.eclipse.jdt.core.ICompilationUnit;
+import org.eclipse.jdt.core.IElementChangedListener;
 import org.eclipse.jdt.core.IField;
 import org.eclipse.jdt.core.IImportDeclaration;
 import org.eclipse.jdt.core.IJavaElement;
+import org.eclipse.jdt.core.IJavaElementDelta;
 import org.eclipse.jdt.core.IJavaProject;
+import org.eclipse.jdt.core.ILocalVariable;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IPackageDeclaration;
+import org.eclipse.jdt.core.ISourceRange;
 import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.ITypeHierarchy;
+import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
 import org.eclipse.jdt.core.dom.AST;
 import org.eclipse.jdt.core.dom.ASTNode;
 import org.eclipse.jdt.core.dom.ASTParser;
 import org.eclipse.jdt.core.dom.ASTVisitor;
-import org.eclipse.jdt.core.dom.Initializer;
-import org.eclipse.jdt.core.dom.LambdaExpression;
-import org.eclipse.jdt.core.dom.MethodDeclaration;
-import org.eclipse.jdt.core.dom.NodeFinder;
 import org.eclipse.jdt.core.dom.SingleVariableDeclaration;
-import org.eclipse.jdt.core.dom.VariableDeclaration;
 import org.eclipse.jdt.core.dom.VariableDeclarationFragment;
 import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jdt.ui.text.java.AbstractProposalSorter;
@@ -63,9 +67,9 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
  * </ol>
  * <b>Why context is rebuilt lazily in {@link #compare}:</b> JDT registers this {@link AbstractProposalSorter} with the JFace
  * {@link org.eclipse.jface.text.contentassist.ContentAssistant} via {@code setSorter}, which only calls {@code compare} —
- * {@code beginSorting} / {@code endSorting} are <em>never</em> invoked along that path. So we instead refresh per-session
- * context inside {@code compare}, keyed by (active compilation unit, cursor offset) so it only recomputes once per
- * content-assist session. */
+ * {@code beginSorting} / {@code endSorting} are <em>never</em> invoked along that path. So we instead refresh per-session context
+ * inside {@code compare}, keyed by (active compilation unit, cursor offset) so it only recomputes once per content-assist
+ * session. */
 public class CompletionSort extends AbstractProposalSorter {
 	static private final ILog log = Platform.getLog(CompletionSort.class);
 
@@ -103,26 +107,69 @@ public class CompletionSort extends AbstractProposalSorter {
 	private String activeProject;
 	private String activePackage;
 	private Set<String> currentCuTypes = Collections.emptySet();
-	/** Element names of fields and methods accessible from the {@link IType} surrounding the completion offset (declared
-	 * members plus inherited members from supertypes excluding {@link Object}, plus members of any outer/declaring type for
-	 * inner-class contexts). Empty when the completion is not inside a type body. */
+	/** Element names of fields and methods accessible from the {@link IType} surrounding the completion offset (declared members
+	 * plus inherited members from supertypes excluding {@link Object}, plus members of any outer/declaring type for inner-class
+	 * contexts). Empty when the completion is not inside a type body. */
 	private Set<String> enclosingTypeMembers = Collections.emptySet();
-	/** Local variable name -> source start offset, for variables declared <em>before</em> the cursor in the enclosing
-	 * executable scope. Used to surface in-scope locals just below stub generators, sorted by descending position so the
-	 * nearest declaration wins. */
+	/** Local variable name -> source start offset, for variables declared <em>before</em> the cursor in the enclosing executable
+	 * scope. Used to surface in-scope locals just below stub generators, sorted by descending position so the nearest declaration
+	 * wins. */
 	private Map<String, Integer> localsAbove = Collections.emptyMap();
-	/** Parameter name -> source start offset, for parameters of the enclosing {@link MethodDeclaration} or
-	 * {@link LambdaExpression}. Sorted ascending (declaration order) within their tier. */
+	/** Parameter name -> source start offset, for parameters of the enclosing method. Sorted ascending (declaration order) within
+	 * their tier. */
 	private Map<String, Integer> parameters = Collections.emptyMap();
-	/** Local variable name -> source start offset, for variables declared <em>after</em> the cursor (eg used in unfinished
-	 * forward references). Sorted ascending so the nearest declaration wins. */
+	/** Local variable name -> source start offset, for variables declared <em>after</em> the cursor (eg used in unfinished forward
+	 * references). Sorted ascending so the nearest declaration wins. */
 	private Map<String, Integer> localsBelow = Collections.emptyMap();
 	private Set<String> importedTypes = Collections.emptySet();
 	private Set<String> importedPackages = Collections.emptySet();
 
-	/** Cache key for {@link #ensureContext}. Refresh only happens when this pair changes (typically once per session). */
+	/** Cache key for {@link #ensureContext}. Refresh only happens when this triple changes (typically once per session). The
+	 * version is observed from {@link #CACHE_VERSION} so a model change forces a refresh even at the same {@code (cu, offset)}. */
 	private ICompilationUnit lastCu;
 	private int lastOffset = -1;
+	private long lastCacheVersion = -1;
+
+	/** Cross-session cache of enclosing-type member sets. Key is the {@link IType} handle (held weakly so closing the editor lets
+	 * JDT and us GC it). The cached set survives across content-assist sessions in the same Eclipse run, so once a type's
+	 * supertype hierarchy is walked the result is reused for every subsequent completion that lands in the same enclosing type —
+	 * even after typing more characters (which invalidates our (cu, offset) key). Pre-populated from {@link #prewarm} so the first
+	 * completion in a freshly-opened editor doesn't pay the type-hierarchy cost.
+	 * <p>
+	 * <b>Invalidation:</b> a {@link JavaCore} {@link IElementChangedListener} clears this map whenever any {@link IType} gets a
+	 * children-list delta (member added/removed/reordered). That covers both saved and working-copy edits because we listen for
+	 * both {@link ElementChangedEvent#POST_CHANGE} and {@link ElementChangedEvent#POST_RECONCILE}. */
+	static private final Map<IType, Set<String>> ENCLOSING_MEMBER_CACHE = Collections.synchronizedMap(new WeakHashMap<>());
+
+	/** Bumped every time {@link #ENCLOSING_MEMBER_CACHE} is invalidated. Per-instance per-session state observes this so even if
+	 * the user re-triggers completion at the exact same {@code (cu, offset)} the model state is re-read. */
+	static private final AtomicLong CACHE_VERSION = new AtomicLong();
+
+	static {
+		JavaCore.addElementChangedListener(new IElementChangedListener() {
+			@Override
+			public void elementChanged (ElementChangedEvent event) {
+				try {
+					if (hasTypeStructuralChange(event.getDelta())) {
+						ENCLOSING_MEMBER_CACHE.clear();
+						CACHE_VERSION.incrementAndGet();
+					}
+				} catch (Exception ex) {
+					log.error("CompletionSort cache invalidation failed", ex);
+				}
+			}
+		}, ElementChangedEvent.POST_CHANGE | ElementChangedEvent.POST_RECONCILE);
+	}
+
+	/** Recursively scans a Java element delta for an {@link IType} whose member list changed. We only care about adds / removes /
+	 * reorders of children on a type — method bodies and field initializers don't affect our member-name set. */
+	static private boolean hasTypeStructuralChange (IJavaElementDelta delta) {
+		if (delta == null) return false;
+		if (delta.getElement() instanceof IType && (delta.getFlags() & IJavaElementDelta.F_CHILDREN) != 0) return true;
+		for (IJavaElementDelta child : delta.getAffectedChildren())
+			if (hasTypeStructuralChange(child)) return true;
+		return false;
+	}
 
 	// --- Debug ---
 	static private final boolean DEBUG = true;
@@ -140,13 +187,13 @@ public class CompletionSort extends AbstractProposalSorter {
 	public void beginSorting (ContentAssistInvocationContext context) {
 		// Not invoked by JFace's setSorter path; kept only so the legacy ProposalSorterHandle.sortProposals path still works
 		// if anything still uses it. The real refresh happens in compare() -> ensureContext().
-		if (DEBUG) log.info("CompletionSort.beginSorting ENTER ctx="
-			+ (context == null ? "null" : context.getClass().getSimpleName()));
+		if (DEBUG)
+			log.info("CompletionSort.beginSorting ENTER ctx=" + (context == null ? "null" : context.getClass().getSimpleName()));
 	}
 
-	/** Refreshes per-session context (enclosing type members, current CU types, imports, etc) if the active editor's CU or
-	 * cursor offset has changed since the last refresh. Called from {@link #compare} so it works under JFace's
-	 * {@code setSorter} path which never invokes {@link #beginSorting}. */
+	/** Refreshes per-session context (enclosing type members, current CU types, imports, etc) if the active editor's CU or cursor
+	 * offset has changed since the last refresh. Called from {@link #compare} so it works under JFace's {@code setSorter} path
+	 * which never invokes {@link #beginSorting}. */
 	private void ensureContext () {
 		IEditorPart editor = activeEditor();
 		if (editor == null) return;
@@ -157,9 +204,11 @@ public class CompletionSort extends AbstractProposalSorter {
 		ISelection sel = sp.getSelection();
 		if (!(sel instanceof ITextSelection ts)) return;
 		int offset = ts.getOffset();
-		if (cu == lastCu && offset == lastOffset) return;
+		long version = CACHE_VERSION.get();
+		if (cu == lastCu && offset == lastOffset && version == lastCacheVersion) return;
 		lastCu = cu;
 		lastOffset = offset;
+		lastCacheVersion = version;
 		refreshFor(cu, offset);
 	}
 
@@ -177,6 +226,7 @@ public class CompletionSort extends AbstractProposalSorter {
 	}
 
 	private void refreshFor (ICompilationUnit cu, int offset) {
+		long t0 = DEBUG ? System.nanoTime() : 0L;
 		scoreCache.clear();
 		nameCache.clear();
 		tierCache.clear();
@@ -191,6 +241,7 @@ public class CompletionSort extends AbstractProposalSorter {
 		importedPackages = Collections.emptySet();
 		debugProposalsLogged = 0;
 		IType debugEnclosingType = null;
+		boolean debugMembersFromCache = false;
 		try {
 			IJavaProject project = cu.getJavaProject();
 			if (project != null) activeProject = project.getElementName();
@@ -205,66 +256,105 @@ public class CompletionSort extends AbstractProposalSorter {
 			importedTypes = impTypes;
 			importedPackages = impPkgs;
 			IJavaElement el = cu.getElementAt(offset);
-			while (el != null && !(el instanceof IType)) el = el.getParent();
-			if (el instanceof IType type) {
-				debugEnclosingType = type;
-				enclosingTypeMembers = collectAccessibleMembers(type);
+			IMethod enclosingMethod = null;
+			IType enclosingType = null;
+			while (el != null) {
+				if (enclosingMethod == null && el instanceof IMethod m) enclosingMethod = m;
+				if (el instanceof IType t) {
+					enclosingType = t;
+					break;
+				}
+				el = el.getParent();
 			}
-			collectScopeLocals(cu, offset);
+			if (enclosingType != null) {
+				debugEnclosingType = enclosingType;
+				Set<String> cached = ENCLOSING_MEMBER_CACHE.get(enclosingType);
+				if (cached != null) {
+					enclosingTypeMembers = cached;
+					debugMembersFromCache = true;
+				} else {
+					enclosingTypeMembers = collectAccessibleMembers(enclosingType);
+					ENCLOSING_MEMBER_CACHE.put(enclosingType, enclosingTypeMembers);
+				}
+			}
+			collectScopeLocals(cu, offset, enclosingMethod);
 		} catch (Exception ex) {
 			log.error("CompletionSort.refreshFor failed", ex);
 		}
 		if (DEBUG) {
+			long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
 			log.info("CompletionSort.refreshFor: cu=" + cu.getElementName() + ", offset=" + offset //
+				+ ", elapsedMs=" + elapsedMs //
+				+ ", membersCached=" + debugMembersFromCache //
 				+ ", project=" + activeProject + ", package=" + activePackage //
-				+ ", enclosingType="
-				+ (debugEnclosingType == null ? "null" : debugEnclosingType.getFullyQualifiedName('.')) //
+				+ ", enclosingType=" + (debugEnclosingType == null ? "null" : debugEnclosingType.getFullyQualifiedName('.')) //
 				+ ", memberCount=" + enclosingTypeMembers.size() //
 				+ ", paramCount=" + parameters.size() + " " + parameters.keySet() //
 				+ ", localsAbove=" + localsAbove.keySet() //
-				+ ", localsBelow=" + localsBelow.keySet() //
-				+ ", members=" + enclosingTypeMembers);
+				+ ", localsBelow=" + localsBelow.keySet());
 		}
 	}
 
-	/** Parses the working-copy AST of {@code cu}, finds the executable scope (method / initializer / lambda) enclosing
-	 * {@code offset}, and populates {@link #parameters}, {@link #localsAbove}, and {@link #localsBelow}. The AST parse
-	 * happens once per session in {@link #refreshFor}, not per proposal. */
-	private void collectScopeLocals (ICompilationUnit cu, int offset) {
+	/** Pre-loads the enclosing type's accessible members into {@link #ENCLOSING_MEMBER_CACHE} so that the first content-assist
+	 * invocation in {@code cu} doesn't pay the {@link IType#newSupertypeHierarchy} and supertype member iteration cost on the UI
+	 * thread. Safe to call on a background thread. Best-effort: any exceptions are swallowed. */
+	static public void prewarm (ICompilationUnit cu, IProgressMonitor monitor) {
 		try {
+			for (IType t : cu.getAllTypes()) {
+				if (monitor != null && monitor.isCanceled()) return;
+				if (ENCLOSING_MEMBER_CACHE.containsKey(t)) continue;
+				try {
+					ENCLOSING_MEMBER_CACHE.put(t, collectAccessibleMembers(t));
+				} catch (JavaModelException ignored) {
+				}
+			}
+		} catch (Exception ignored) {
+		}
+	}
+
+	/** Populates {@link #parameters}, {@link #localsAbove}, and {@link #localsBelow} for the executable scope enclosing
+	 * {@code offset}. Strategy:
+	 * <ul>
+	 * <li>Parameters come from {@link IMethod#getParameters()} — fast, no AST parse needed.
+	 * <li>Locals require an AST. We parse only the source range of the enclosing method via
+	 * {@link ASTParser#K_CLASS_BODY_DECLARATIONS}, which on a typical large file is roughly an order of magnitude faster than
+	 * parsing the entire compilation unit ({@link ASTParser#K_COMPILATION_UNIT}).
+	 * </ul>
+	 * If the cursor is in an initializer, lambda, or other non-method scope, locals are skipped (the common case is method
+	 * bodies). */
+	private void collectScopeLocals (ICompilationUnit cu, int offset, IMethod enclosingMethod) {
+		if (enclosingMethod == null) return;
+		try {
+			// Parameters via the Java model: avoids an AST parse, and IMethod.getParameters returns ILocalVariables with
+			// proper source ranges.
+			Map<String, Integer> params = new HashMap<>();
+			for (ILocalVariable p : enclosingMethod.getParameters()) {
+				ISourceRange r = p.getNameRange();
+				params.put(p.getElementName(), Integer.valueOf(r != null ? r.getOffset() : 0));
+			}
+			parameters = params;
+
+			// Locals via a method-scoped AST. Parsing just the method declaration is much cheaper than the whole CU.
+			ISourceRange methodRange = enclosingMethod.getSourceRange();
+			if (methodRange == null || methodRange.getLength() <= 0) return;
+			String methodSrc;
+			try {
+				methodSrc = cu.getBuffer().getText(methodRange.getOffset(), methodRange.getLength());
+			} catch (Exception ex) {
+				return;
+			}
 			ASTParser parser = ASTParser.newParser(AST.getJLSLatest());
-			parser.setSource(cu);
-			parser.setKind(ASTParser.K_COMPILATION_UNIT);
+			parser.setSource(methodSrc.toCharArray());
+			parser.setKind(ASTParser.K_CLASS_BODY_DECLARATIONS);
 			parser.setResolveBindings(false);
 			parser.setStatementsRecovery(true);
 			ASTNode root = parser.createAST(null);
-			if (!(root instanceof org.eclipse.jdt.core.dom.CompilationUnit ast)) return;
-			ASTNode at = NodeFinder.perform(ast, offset, 0);
-			ASTNode scope = at;
-			while (scope != null && !(scope instanceof MethodDeclaration) && !(scope instanceof Initializer)
-				&& !(scope instanceof LambdaExpression)) {
-				scope = scope.getParent();
-			}
-			if (scope == null) return;
-			Map<String, Integer> params = new HashMap<>();
-			Map<String, Integer> above = new HashMap<>();
-			Map<String, Integer> below = new HashMap<>();
-			// Parameters of the enclosing executable.
-			if (scope instanceof MethodDeclaration md) {
-				for (Object o : md.parameters()) {
-					if (o instanceof SingleVariableDeclaration p)
-						params.put(p.getName().getIdentifier(), Integer.valueOf(p.getStartPosition()));
-				}
-			} else if (scope instanceof LambdaExpression le) {
-				for (Object o : le.parameters()) {
-					if (o instanceof VariableDeclaration vd)
-						params.put(vd.getName().getIdentifier(), Integer.valueOf(vd.getStartPosition()));
-				}
-			}
-			// Locals declared anywhere inside the scope's body (visiting nested blocks; for-loop, try-with-resources,
-			// catch parameters, pattern variables, etc all appear as VariableDeclarationFragment or SingleVariableDeclaration).
-			final ASTNode finalScope = scope;
-			scope.accept(new ASTVisitor() {
+			if (root == null) return;
+			final int methodStart = methodRange.getOffset();
+			final Map<String, Integer> above = new HashMap<>();
+			final Map<String, Integer> below = new HashMap<>();
+			final Set<String> paramNames = params.keySet();
+			root.accept(new ASTVisitor() {
 				@Override
 				public boolean visit (VariableDeclarationFragment node) {
 					put(node.getName().getIdentifier(), node.getStartPosition());
@@ -273,17 +363,20 @@ public class CompletionSort extends AbstractProposalSorter {
 
 				@Override
 				public boolean visit (SingleVariableDeclaration node) {
-					// Skip the parameters of the enclosing scope itself; already collected into `params` above.
-					if (node.getParent() != finalScope) put(node.getName().getIdentifier(), node.getStartPosition());
+					String name = node.getName().getIdentifier();
+					// The enclosing method's own parameters appear as top-level SingleVariableDeclarations; we already have
+					// them via IMethod.getParameters. Anything else is a for-each / catch / pattern variable.
+					if (paramNames.contains(name)) return true;
+					put(name, node.getStartPosition());
 					return true;
 				}
 
-				private void put (String name, int pos) {
-					Map<String, Integer> map = pos < offset ? above : below;
-					map.putIfAbsent(name, Integer.valueOf(pos));
+				private void put (String name, int relPos) {
+					int absPos = methodStart + relPos;
+					Map<String, Integer> map = absPos < offset ? above : below;
+					map.putIfAbsent(name, Integer.valueOf(absPos));
 				}
 			});
-			parameters = params;
 			localsAbove = above;
 			localsBelow = below;
 		} catch (Exception ex) {
@@ -291,9 +384,9 @@ public class CompletionSort extends AbstractProposalSorter {
 		}
 	}
 
-	/** Collects the simple names of all fields and methods accessible from {@code type}: members declared on it, members
-	 * inherited from its supertypes (excluding {@link Object} so common methods like {@code toString} don't dominate), and
-	 * members of any outer/declaring type (for inner and anonymous class contexts). Pure public JDT model API. */
+	/** Collects the simple names of all fields and methods accessible from {@code type}: members declared on it, members inherited
+	 * from its supertypes (excluding {@link Object} so common methods like {@code toString} don't dominate), and members of any
+	 * outer/declaring type (for inner and anonymous class contexts). Pure public JDT model API. */
 	static private Set<String> collectAccessibleMembers (IType type) throws JavaModelException {
 		Set<String> names = new HashSet<>();
 		// Members of the type itself plus its enclosing type chain (handles inner / anonymous classes).
@@ -314,8 +407,10 @@ public class CompletionSort extends AbstractProposalSorter {
 	}
 
 	static private void addDeclaredMembers (IType t, Set<String> out) throws JavaModelException {
-		for (IField f : t.getFields()) out.add(f.getElementName());
-		for (IMethod m : t.getMethods()) out.add(m.getElementName());
+		for (IField f : t.getFields())
+			out.add(f.getElementName());
+		for (IMethod m : t.getMethods())
+			out.add(m.getElementName());
 	}
 
 	static private void collectImports (IImportDeclaration[] imports, Set<String> types, Set<String> packages)
@@ -421,8 +516,8 @@ public class CompletionSort extends AbstractProposalSorter {
 		return t;
 	}
 
-	/** Cached lookup of the proposal's leading identifier (the proposal name). Empty string is used as a sentinel for
-	 * "no identifier" so we can distinguish from "not yet computed" via the cache miss. */
+	/** Cached lookup of the proposal's leading identifier (the proposal name). Empty string is used as a sentinel for "no
+	 * identifier" so we can distinguish from "not yet computed" via the cache miss. */
 	private String nameOf (ICompletionProposal p) {
 		String cached = nameCache.get(p);
 		if (cached != null) return cached;
@@ -432,8 +527,8 @@ public class CompletionSort extends AbstractProposalSorter {
 		return name;
 	}
 
-	/** Extracts the longest leading run of Java identifier characters from {@code s}. Used to recover the proposal's
-	 * member name (which JDT always places at the start of the display string, eg {@code "eyeButton : EyeButton - Foo"} or
+	/** Extracts the longest leading run of Java identifier characters from {@code s}. Used to recover the proposal's member name
+	 * (which JDT always places at the start of the display string, eg {@code "eyeButton : EyeButton - Foo"} or
 	 * {@code "setBounds(int, int, int, int) - Foo"}). */
 	static private String leadingIdentifier (String s) {
 		if (s == null || s.isEmpty()) return null;
