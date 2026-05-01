@@ -25,6 +25,8 @@ import com.esotericsoftware.nateclipse.utils.WebServer.Exchange;
 /** Type / member lookup against the JDT model. Handles unqualified and wildcard type names, nested-type dot/$ swapping,
  * ambiguous-name error responses, and the source-only workspace search scope. Stateless. */
 public class JdtLookup {
+	private static final String CONSTRUCTOR_ALIAS = "<init>";
+
 	private JdtLookup () {
 	}
 
@@ -138,24 +140,26 @@ public class JdtLookup {
 	}
 
 	public static IMethod findMethod (IType type, String methodName, String paramTypes) throws JavaModelException {
+		boolean constructor = isConstructorAlias(methodName);
 		if (paramTypes != null && !paramTypes.isEmpty()) {
 			var parts = paramTypes.split(",");
 			var sigs = new String[parts.length];
 			for (int i = 0; i < parts.length; i++)
 				sigs[i] = Signature.createTypeSignature(parts[i].trim(), false);
-			var method = type.getMethod(methodName, sigs);
-			if (method.exists()) return method;
+			var method = type.getMethod(constructor ? type.getElementName() : methodName, sigs);
+			if (method.exists() && (!constructor || method.isConstructor())) return method;
 		}
 		for (var method : type.getMethods())
-			if (method.getElementName().equals(methodName)) return method;
+			if (matchesMethodName(method, methodName, constructor)) return method;
 		return null;
 	}
 
 	/** Like {@link #findMethod} but walks the supertype hierarchy if no direct match is found. Returns the first match in the
-	 * superclass chain, then interfaces (the order produced by {@link IType#newSupertypeHierarchy}). */
+	 * superclass chain, then interfaces (the order produced by {@link IType#newSupertypeHierarchy}). Constructors are not inherited;
+	 * use <code>&lt;init&gt;</code> to request a constructor directly. */
 	public static IMethod findMethodInHierarchy (IType type, String methodName, String paramTypes) throws JavaModelException {
 		var direct = findMethod(type, methodName, paramTypes);
-		if (direct != null) return direct;
+		if (direct != null || isConstructorAlias(methodName)) return direct;
 		var hierarchy = type.newSupertypeHierarchy(new NullProgressMonitor());
 		for (var sup : hierarchy.getAllSupertypes(type)) {
 			if ("java.lang.Object".equals(sup.getFullyQualifiedName())) continue;
@@ -172,9 +176,18 @@ public class JdtLookup {
 			if (method != null) result.add(method);
 			return result;
 		}
+		boolean constructor = isConstructorAlias(methodName);
 		for (var method : type.getMethods())
-			if (method.getElementName().equals(methodName)) result.add(method);
+			if (matchesMethodName(method, methodName, constructor)) result.add(method);
 		return result;
+	}
+
+	private static boolean isConstructorAlias (String methodName) {
+		return CONSTRUCTOR_ALIAS.equals(methodName);
+	}
+
+	private static boolean matchesMethodName (IMethod method, String methodName, boolean constructor) throws JavaModelException {
+		return constructor ? method.isConstructor() : method.getElementName().equals(methodName);
 	}
 
 	public static String methodKey (IMethod m) throws JavaModelException {
