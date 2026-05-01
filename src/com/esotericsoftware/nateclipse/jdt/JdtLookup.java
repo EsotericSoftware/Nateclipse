@@ -90,7 +90,15 @@ public class JdtLookup {
 		var pattern = SearchPattern.createPattern(typeName, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS,
 			matchRule);
 		var types = new ArrayList<IType>();
-		search(pattern, searchScope(projectName), sourceTypeCollector(types));
+		var scope = searchScope(projectName);
+		search(pattern, scope, sourceTypeCollector(types));
+
+		// No hit: retry with '.' and '$' swapped so "Outer.Inner" and "Outer$Inner" are interchangeable.
+		if (types.isEmpty() && !hasWildcards && (typeName.indexOf('.') >= 0 || typeName.indexOf('$') >= 0)) {
+			String swapped = typeName.indexOf('$') >= 0 ? typeName.replace('$', '.') : typeName.replace('.', '$');
+			var alt = SearchPattern.createPattern(swapped, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS, matchRule);
+			search(alt, scope, sourceTypeCollector(types));
+		}
 		return types;
 	}
 
