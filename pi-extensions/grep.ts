@@ -20,7 +20,7 @@ export default async function (pi: ExtensionAPI) {
 		name: "grep",
 		label: "grep",
 		promptSnippet: "Search file contents with grep",
-		description: "Runs grep. All grep flags supported. Unescaped | adds -E unless -E/-F/-P is present",
+		description: "Runs grep. All grep flags supported. Default is BRE, unescaped | adds -E unless using -F/-P",
 		promptGuidelines: ["Use the grep tool instead of bash grep"],
 		parameters: Type.Object({
 			pattern: Type.String({ description: "Grep pattern" }),
