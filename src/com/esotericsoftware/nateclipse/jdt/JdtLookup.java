@@ -155,8 +155,8 @@ public class JdtLookup {
 	}
 
 	/** Like {@link #findMethod} but walks the supertype hierarchy if no direct match is found. Returns the first match in the
-	 * superclass chain, then interfaces (the order produced by {@link IType#newSupertypeHierarchy}). Constructors are not inherited;
-	 * use <code>&lt;init&gt;</code> to request a constructor directly. */
+	 * superclass chain, then interfaces (the order produced by {@link IType#newSupertypeHierarchy}). Constructors are not
+	 * inherited; use <code>&lt;init&gt;</code> to request a constructor directly. */
 	public static IMethod findMethodInHierarchy (IType type, String methodName, String paramTypes) throws JavaModelException {
 		var direct = findMethod(type, methodName, paramTypes);
 		if (direct != null || isConstructorAlias(methodName)) return direct;
