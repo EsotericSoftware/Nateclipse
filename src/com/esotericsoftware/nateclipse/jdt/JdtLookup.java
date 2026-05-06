@@ -26,6 +26,7 @@ import com.esotericsoftware.nateclipse.utils.WebServer.Exchange;
  * ambiguous-name error responses, and the source-only workspace search scope. Stateless. */
 public class JdtLookup {
 	private static final String CONSTRUCTOR_ALIAS = "<init>";
+	private static final int AMBIGUOUS_TYPE_MAX_SHOWN = 25;
 
 	private JdtLookup () {
 	}
@@ -63,12 +64,14 @@ public class JdtLookup {
 			return null;
 		}
 
-		// Multiple matches: list FQNs.
+		// Multiple matches: list FQNs, capped so broad patterns don't flood the client.
 		var sb = new StringBuilder("Ambiguous, use fully qualified name:\n");
-		for (int i = 0; i < types.size(); i++) {
+		int shown = Math.min(types.size(), AMBIGUOUS_TYPE_MAX_SHOWN);
+		for (int i = 0; i < shown; i++) {
 			if (i > 0) sb.append("\n");
 			sb.append(types.get(i).getFullyQualifiedName());
 		}
+		if (types.size() > shown) sb.append("\n...+").append(types.size() - shown).append(" more");
 		error(exchange, 400, sb.toString());
 		return null;
 	}
