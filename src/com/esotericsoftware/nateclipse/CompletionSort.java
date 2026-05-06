@@ -61,9 +61,10 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
  * <li>Parameters of the enclosing method/lambda/etc, in declaration order.
  * <li>Local variables declared <em>below</em> the cursor (eg in following statements), nearest-first.
  * <li>Methods and fields declared in (or inherited by) the enclosing type.
- * <li>Templates (eg {@code sout} -> {@code System.out.println()}).
+ * <li>Templates only when the typed prefix is a strong match (eg {@code sout} -> {@code sysout}).
  * <li>Type proposals, scored: types declared in the current CU > imported > same package > workspace > common JDK > rest.
  * <li>Everything else (keywords, non-matching members from elsewhere), by relevance.
+ * <li>Weak template matches, so generic snippets don't bury normal Java proposals.
  * </ol>
  * <b>Why context is rebuilt lazily in {@link #compare}:</b> JDT registers this {@link AbstractProposalSorter} with the JFace
  * {@link org.eclipse.jface.text.contentassist.ContentAssistant} via {@code setSorter}, which only calls {@code compare} —
@@ -74,6 +75,9 @@ public class CompletionSort extends AbstractProposalSorter {
 	static private final ILog log = Platform.getLog(CompletionSort.class);
 
 	static public final String ID = "com.esotericsoftware.nateclipse.completionSort";
+
+	static private final int STRONG_TEMPLATE_MATCH = 80;
+	static private final int MIN_TEMPLATE_PREFIX_LENGTH = 2;
 
 	// --- Reflection helpers for extracting FQN from internal proposal classes ---
 
@@ -123,6 +127,9 @@ public class CompletionSort extends AbstractProposalSorter {
 	private Map<String, Integer> localsBelow = Collections.emptyMap();
 	private Set<String> importedTypes = Collections.emptySet();
 	private Set<String> importedPackages = Collections.emptySet();
+	/** Java identifier prefix immediately before the content-assist offset. Used to promote only high-confidence template
+	 * matches. */
+	private String activePrefix = "";
 
 	/** Cache key for {@link #ensureContext}. Refresh only happens when this triple changes (typically once per session). The
 	 * version is observed from {@link #CACHE_VERSION} so a model change forces a refresh even at the same {@code (cu, offset)}. */
@@ -182,6 +189,8 @@ public class CompletionSort extends AbstractProposalSorter {
 	private final Map<ICompletionProposal, String> nameCache = new HashMap<>();
 	/** Proposal identity -> computed tier. Reset on each context refresh. */
 	private final Map<ICompletionProposal, Integer> tierCache = new HashMap<>();
+	/** Proposal identity -> fuzzy match score against {@link #activePrefix}. Reset on each context refresh. */
+	private final Map<ICompletionProposal, Integer> templateMatchCache = new HashMap<>();
 
 	@Override
 	public void beginSorting (ContentAssistInvocationContext context) {
@@ -230,6 +239,7 @@ public class CompletionSort extends AbstractProposalSorter {
 		scoreCache.clear();
 		nameCache.clear();
 		tierCache.clear();
+		templateMatchCache.clear();
 		activeProject = null;
 		activePackage = null;
 		currentCuTypes = Collections.emptySet();
@@ -239,10 +249,12 @@ public class CompletionSort extends AbstractProposalSorter {
 		localsBelow = Collections.emptyMap();
 		importedTypes = Collections.emptySet();
 		importedPackages = Collections.emptySet();
+		activePrefix = "";
 		debugProposalsLogged = 0;
 		IType debugEnclosingType = null;
 		boolean debugMembersFromCache = false;
 		try {
+			activePrefix = completionPrefix(cu, offset);
 			IJavaProject project = cu.getJavaProject();
 			if (project != null) activeProject = project.getElementName();
 			IPackageDeclaration[] pkgs = cu.getPackageDeclarations();
@@ -284,6 +296,7 @@ public class CompletionSort extends AbstractProposalSorter {
 		if (DEBUG) {
 			long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
 			log.info("CompletionSort.refreshFor: cu=" + cu.getElementName() + ", offset=" + offset //
+				+ ", prefix=" + activePrefix //
 				+ ", elapsedMs=" + elapsedMs //
 				+ ", membersCached=" + debugMembersFromCache //
 				+ ", project=" + activeProject + ", package=" + activePackage //
@@ -461,9 +474,10 @@ public class CompletionSort extends AbstractProposalSorter {
 		// 2: parameters of the enclosing method/lambda (sub-sorted by declaration order).
 		// 3: locals declared below the cursor (sub-sorted ascending = nearest first).
 		// 4: methods/fields accessible from the enclosing type (declared + inherited + outer-class).
-		// 5: templates.
+		// 5: high-confidence templates, sub-sorted by descending prefix match score.
 		// 6: type proposals, sub-sorted by descending score.
 		// 7: everything else, by relevance.
+		// 8: weak templates, sub-sorted by descending prefix match score.
 		int t1 = tier(p1);
 		int t2 = tier(p2);
 		if (t1 != t2) return t1 - t2;
@@ -477,6 +491,10 @@ public class CompletionSort extends AbstractProposalSorter {
 					: Integer.compare(pos1.intValue(), pos2.intValue());
 				if (diff != 0) return diff;
 			}
+		}
+		if (t1 == 5 || t1 == 8) {
+			int diff = templateMatchScore(p2) - templateMatchScore(p1);
+			if (diff != 0) return diff;
 		}
 		if (t1 == 6) {
 			Integer s1 = scoreOrNull(p1);
@@ -503,7 +521,7 @@ public class CompletionSort extends AbstractProposalSorter {
 			else if (!name.isEmpty() && enclosingTypeMembers.contains(name))
 				t = 4;
 			else if (isTemplate(p))
-				t = 5;
+				t = isStrongTemplateMatch(p) ? 5 : 8;
 			else
 				t = scoreOrNull(p) != null ? 6 : 7;
 		}
@@ -514,6 +532,80 @@ public class CompletionSort extends AbstractProposalSorter {
 				+ safeDisplay(p));
 		}
 		return t;
+	}
+
+	private boolean isStrongTemplateMatch (ICompletionProposal p) {
+		return templateMatchScore(p) >= STRONG_TEMPLATE_MATCH;
+	}
+
+	private int templateMatchScore (ICompletionProposal p) {
+		Integer cached = templateMatchCache.get(p);
+		if (cached != null) return cached.intValue();
+		String prefix = activePrefix;
+		int score = prefix.length() < MIN_TEMPLATE_PREFIX_LENGTH ? 0 : fuzzyTemplateScore(prefix, templateName(p));
+		templateMatchCache.put(p, Integer.valueOf(score));
+		return score;
+	}
+
+	private String templateName (ICompletionProposal p) {
+		try {
+			Method getTemplate = null;
+			for (Class<?> c = p.getClass(); c != null && getTemplate == null; c = c.getSuperclass()) {
+				try {
+					getTemplate = c.getDeclaredMethod("getTemplate");
+					getTemplate.setAccessible(true);
+				} catch (NoSuchMethodException ignored) {
+				}
+			}
+			if (getTemplate != null) {
+				Object template = getTemplate.invoke(p);
+				if (template != null) {
+					Object name = template.getClass().getMethod("getName").invoke(template);
+					if (name instanceof String s && !s.isEmpty()) return s;
+				}
+			}
+		} catch (Exception ignored) {
+		}
+		return nameOf(p);
+	}
+
+	static private int fuzzyTemplateScore (String prefix, String name) {
+		if (prefix == null || prefix.isEmpty() || name == null || name.isEmpty()) return 0;
+		String p = prefix.toLowerCase();
+		String n = name.toLowerCase();
+		if (p.equals(n)) return 100;
+		if (n.startsWith(p)) return 90 + Math.min(10, p.length() * 10 / Math.max(1, n.length()));
+		if (n.contains(p)) return 70 + Math.min(20, p.length() * 20 / Math.max(1, n.length()));
+
+		int pi = 0;
+		int start = -1;
+		int last = -1;
+		int gaps = 0;
+		for (int i = 0, nn = n.length(), pp = p.length(); i < nn && pi < pp; i++) {
+			if (n.charAt(i) != p.charAt(pi)) continue;
+			if (start < 0) start = i;
+			if (last >= 0) gaps += i - last - 1;
+			last = i;
+			pi++;
+		}
+		if (pi < p.length()) return 0;
+		int score = 100 - gaps * 8 - start * 4 - (n.length() - p.length()) * 2;
+		return Math.max(0, Math.min(99, score));
+	}
+
+	static private String completionPrefix (ICompilationUnit cu, int offset) {
+		try {
+			org.eclipse.jdt.core.IBuffer buffer = cu.getBuffer();
+			if (buffer == null) return "";
+			int len = buffer.getLength();
+			if (offset > len) offset = len;
+			int start = offset;
+			while (start > 0 && Character.isJavaIdentifierPart(buffer.getChar(start - 1)))
+				start--;
+			return start == offset ? "" : buffer.getText(start, offset - start);
+		} catch (Exception ex) {
+			return "";
+		}
 	}
 
 	/** Cached lookup of the proposal's leading identifier (the proposal name). Empty string is used as a sentinel for "no
