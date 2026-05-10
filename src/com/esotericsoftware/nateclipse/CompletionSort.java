@@ -179,7 +179,7 @@ public class CompletionSort extends AbstractProposalSorter {
 	}
 
 	// --- Debug ---
-	static private final boolean DEBUG = true;
+	static private final boolean DEBUG = false;
 	/** Limit per-proposal logging to a handful of entries per refresh to avoid log spam. */
 	private int debugProposalsLogged;
 
