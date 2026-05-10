@@ -13,6 +13,7 @@ import org.eclipse.ui.IEditorPart;
 import org.eclipse.ui.IPartListener2;
 import org.eclipse.ui.IURIEditorInput;
 import org.eclipse.ui.IWorkbenchPart;
+import org.eclipse.ui.IWorkbenchPartConstants;
 import org.eclipse.ui.IWorkbenchPartReference;
 
 public class TabLabels implements IPartListener2 {
@@ -24,9 +25,12 @@ public class TabLabels implements IPartListener2 {
 			// When opened.
 			fixTitle(partRef, editor);
 
-			// When saved.
+			// When saved or when JDT/workbench recomputes the editor title.
 			editor.addPropertyListener( (source, propId) -> {
-				if (propId == IEditorPart.PROP_DIRTY && !editor.isDirty()) fixTitle(partRef, editor);
+				if (propId == IWorkbenchPartConstants.PROP_DIRTY && editor.isDirty()) return;
+				if (propId == IWorkbenchPartConstants.PROP_DIRTY || propId == IWorkbenchPartConstants.PROP_TITLE
+					|| propId == IWorkbenchPartConstants.PROP_PART_NAME || propId == IWorkbenchPartConstants.PROP_INPUT)
+					fixTitleIfOpen(partRef, editor);
 			});
 		}
 	}
@@ -48,6 +52,11 @@ public class TabLabels implements IPartListener2 {
 				fixAllTabFolders((Composite)child);
 			}
 		}
+	}
+
+	static private void fixTitleIfOpen (IWorkbenchPartReference partRef, IEditorPart editor) {
+		if (partRef.getPart(false) != editor) return;
+		if (editor.getEditorInput() instanceof IURIEditorInput) fixTitle(partRef, editor);
 	}
 
 	static void fixTitle (IWorkbenchPartReference partRef, IEditorPart editor) {
