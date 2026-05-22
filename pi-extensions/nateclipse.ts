@@ -377,7 +377,7 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "java_errors",
 		label: "Java Errors",
-		promptSnippet: "Report Java compilation errors and warnings",
+		promptSnippet: "Reports Java compilation errors and warnings",
 		description: "Refreshes workspace and waits for build to complete",
 		promptGuidelines: ["Verify projects compile after all editing is complete"],
 		parameters: Type.Object({
