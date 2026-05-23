@@ -3,9 +3,9 @@
 // - When edits fail due to multiple occurrences, returns minimal unique context to save a turn.
 // - Prefixes `No edits made.` when edits fail to make it clear.
 
-import type { EditToolDetails, ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createEditToolDefinition } from "@mariozechner/pi-coding-agent";
-import { Container } from "@mariozechner/pi-tui";
+import type { EditToolDetails, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createEditToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Container } from "@earendil-works/pi-tui";
 
 import { readFile } from "fs/promises";
 import { resolve } from "path";
@@ -20,7 +20,17 @@ export default async function (pi: ExtensionAPI) {
 	//(await import("./util/debug")).default(pi);
 
 	const cwd = process.cwd();
-	const original = createEditToolDefinition(cwd);
+	const originals = new Map<string, ReturnType<typeof createEditToolDefinition>>();
+	const getOriginal = (toolCwd: string) => {
+		const key = toolCwd || cwd;
+		let original = originals.get(key);
+		if (!original) {
+			original = createEditToolDefinition(key);
+			originals.set(key, original);
+		}
+		return original;
+	};
+	const original = getOriginal(cwd);
 	const originalRenderCall = original.renderCall;
 	const originalRenderResult = original.renderResult;
 
@@ -75,15 +85,16 @@ export default async function (pi: ExtensionAPI) {
 			}
 			: undefined,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const toolCwd = ctx?.cwd ?? cwd;
 			try {
-				return await original.execute(toolCallId, params, signal, onUpdate, ctx);
+				return await getOriginal(toolCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 			} catch (err: any) {
 				const msg = err?.message ?? String(err);
 				// Underlying tool throws on ambiguous matches; enrich with locations.
 				if (msg.includes("occurrence"))
-					throw new Error("No edits made. " + await enrichDuplicateError(msg, params, cwd));
+					throw new Error("No edits made. " + await enrichDuplicateError(msg, params, toolCwd));
 				if (msg.includes("Could not find"))
-					throw new Error("No edits made. " + await enrichNotFoundError(msg, params, cwd));
+					throw new Error("No edits made. " + await enrichNotFoundError(msg, params, toolCwd));
 				throw new Error("No edits made. " + msg);
 			}
 		},
@@ -154,6 +165,7 @@ function setSettledErrorPreview(context: any, errorText: string): boolean {
 /** Find every occurrence of `needle` in `haystack`, returning 1-based line numbers. */
 function findLineNumbers(haystack: string, needle: string): number[] {
 	const lines: number[] = [];
+	if (!needle) return lines;
 	let from = 0;
 	while (true) {
 		const idx = haystack.indexOf(needle, from);
@@ -196,21 +208,42 @@ async function readFileNormalized(cwd: string, filePath: string): Promise<string
 	// pi-coding-agent uses a leading "@" to mark file refs; strip it for fs access.
 	if (filePath.startsWith("@")) filePath = filePath.slice(1);
 	const raw = await readFile(resolve(cwd, filePath), "utf-8");
-	return raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	return stripBom(raw).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function stripBom(text: string): string {
+	return text.startsWith("\uFEFF") ? text.slice(1) : text;
+}
+
+// Mirrors Pi's built-in edit matching normalization from edit-diff.ts.
+function normalizeForBuiltinEditMatch(text: string): string {
+	return text
+		.normalize("NFKC")
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.join("\n")
+		.replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+		.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+		.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
+		.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ");
+}
+
+function normalizeEditTextForMatching(text: string): string {
+	return normalizeForBuiltinEditMatch(text.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
 }
 
 async function enrichDuplicateError(text: string, params: EditParams, cwd: string): Promise<string> {
 	try {
 		const content = await readFileNormalized(cwd, params.path ?? "");
 		const lines = content.split("\n");
+		const matchContent = normalizeForBuiltinEditMatch(content);
 
-		// Find all edits whose oldText appears more than once, keeping the match positions.
+		// Find all edits whose oldText appears more than once, using the same normalization as Pi's built-in edit.
 		const dupes: { oldText: string; startLines: number[] }[] = [];
 		for (const edit of params.edits ?? []) {
 			if (!edit?.oldText) continue;
-			// Normalize oldText so CRLF from the model matches the normalized content.
-			const oldText = edit.oldText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-			const startLines = findLineNumbers(content, oldText);
+			const oldText = normalizeEditTextForMatching(edit.oldText);
+			const startLines = findLineNumbers(matchContent, oldText);
 			if (startLines.length > 1) dupes.push({ oldText, startLines });
 		}
 		if (!dupes.length) return text;
@@ -306,6 +339,7 @@ async function enrichNotFoundError(text: string, params: EditParams, cwd: string
 	try {
 		const content = await readFileNormalized(cwd, params.path ?? "");
 		const allLines = content.split("\n");
+		const matchContent = normalizeForBuiltinEditMatch(content);
 
 		// One candidate per failing edit that has a usable fuzzy match.
 		type Entry = { editIndex: number; anchorLine: number };
@@ -316,19 +350,18 @@ async function enrichNotFoundError(text: string, params: EditParams, cwd: string
 		for (let i = 0; i < edits.length; i++) {
 			const edit = edits[i];
 			if (!edit?.oldText) continue;
-			// Also normalize oldText CRLF so we match against the normalized content.
-			const oldText = edit.oldText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-			// Skip edits that exist exactly (only enriching the ones that failed).
-			if (content.includes(oldText)) continue;
+			const oldText = normalizeEditTextForMatching(edit.oldText);
+			// Skip edits that match with the built-in normalization (only enriching the ones that failed).
+			if (matchContent.includes(oldText)) continue;
 
-			const match = fuzzyFind(content, oldText);
+			const match = fuzzyFind(matchContent, oldText);
 			if (!match || match.score < 0.3) continue;
 
 			let anchorLine = 1;
-			for (let j = 0; j < match.origStart; j++) if (content[j] === "\n") anchorLine++;
+			for (let j = 0; j < match.origStart; j++) if (matchContent[j] === "\n") anchorLine++;
 
 			// Show 2 lines before + matched region + 1 line after.
-			const matchedLineCount = content.substring(match.origStart, match.origEnd).split("\n").length;
+			const matchedLineCount = matchContent.substring(match.origStart, match.origEnd).split("\n").length;
 			const ctxStart = Math.max(0, anchorLine - 1 - 2);
 			const ctxEnd = Math.min(allLines.length, anchorLine - 1 + matchedLineCount + 1);
 

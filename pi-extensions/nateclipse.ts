@@ -1,10 +1,10 @@
 // Provides tools to access Eclipse JDT through the Nateclipse plugin.
 
-import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor, ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
-import { highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
-import { Type, type TOptional, type TString } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
+import { Type, type TOptional, type TString } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import os from "node:os";
 
 const PORT = 9001;

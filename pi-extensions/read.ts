@@ -1,15 +1,26 @@
 // Wraps pi's built-in read tool so its styling matches other Nateclipse tools.
 
-import type { ExtensionAPI, ReadToolDetails, Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
-import { createReadToolDefinition, getLanguageFromPath, highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ReadToolDetails, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { createReadToolDefinition, getLanguageFromPath, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+
+const COLLAPSED_READ_LINES = 4;
 
 export default async function (pi: ExtensionAPI) {
 	//(await import("./util/debug")).default(pi);
 
 	const cwd = process.cwd();
-	const original = createReadToolDefinition(cwd);
-	const originalRenderResult = original.renderResult;
+	const originals = new Map<string, ReturnType<typeof createReadToolDefinition>>();
+	const getOriginal = (toolCwd: string) => {
+		const key = toolCwd || cwd;
+		let original = originals.get(key);
+		if (!original) {
+			original = createReadToolDefinition(key);
+			originals.set(key, original);
+		}
+		return original;
+	};
+	const original = getOriginal(cwd);
 
 	pi.registerTool<typeof original.parameters, ReadToolDetails | undefined>({
 		...original,
@@ -18,9 +29,13 @@ export default async function (pi: ExtensionAPI) {
 		promptSnippet: "Read file contents",
 		description: "Read the contents of a text or image file. Use offset/limit for large files",
 		promptGuidelines: ["Use the read tool instead of bash cat or sed"],
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return getOriginal(ctx?.cwd ?? cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+		},
 		renderCall(params, theme, context) {
 			const s = style(theme);
-			const path = params?.path ? relPath(params.path, context.cwd) : "";
+			const argPath = readPathArg(params);
+			const path = argPath ? relPath(argPath, context.cwd) : "";
 			let text = s.tool("read") + " " + (path ? s.accent(path) : s.dim("..."));
 			// Mirror offset/limit as ":start-end" like the built-in renderer.
 			if (params?.offset !== undefined || params?.limit !== undefined) {
@@ -33,6 +48,7 @@ export default async function (pi: ExtensionAPI) {
 		renderResult(r, options, theme, context) {
 			// Images: let the built-in renderer handle attachments/fallbacks.
 			const hasImage = r?.content?.some((c) => c.type === "image");
+			const originalRenderResult = getOriginal(context.cwd).renderResult;
 			if (hasImage && originalRenderResult) return originalRenderResult(r, options, theme, context);
 
 			const s = style(theme);
@@ -45,7 +61,7 @@ export default async function (pi: ExtensionAPI) {
 			const { body, notice } = splitTrailingNotice(text);
 
 			const offset = (context.args?.offset as number | undefined) ?? 1;
-			const path = context.args?.path as string | undefined;
+			const path = readPathArg(context.args);
 			const lang = path ? getLanguageFromPath(path) : undefined;
 
 			let rendered: string;
@@ -60,9 +76,9 @@ export default async function (pi: ExtensionAPI) {
 					.join("\n");
 			}
 
-			let out = rendered;
+			let out = s.applyCollapse(rendered, options.expanded);
 			if (notice) out += (out ? "\n" : "") + s.dim(notice);
-			return new Text("\n" + s.applyCollapse(out, options.expanded), 0, 0);
+			return new Text("\n" + out, 0, 0);
 		},
 	});
 }
@@ -73,6 +89,10 @@ function splitTrailingNotice(text: string): { body: string; notice: string | nul
 	if (m) return { body: text.slice(0, m.index), notice: m[1] };
 	if (/^\[[^\n]+\]\s*$/.test(text)) return { body: "", notice: text.trim() };
 	return { body: text, notice: null };
+}
+
+function readPathArg(args: any): string | undefined {
+	return typeof args?.path === "string" ? args.path : typeof args?.file_path === "string" ? args.file_path : undefined;
 }
 
 function relPath(absPath: string, cwd: string): string {
@@ -113,9 +133,9 @@ function style(theme: Theme): Style {
 		applyCollapse(text, expanded) {
 			if (expanded) return text;
 			const lines = text.split("\n");
-			if (lines.length <= 10) return text;
-			const remaining = lines.length - 10;
-			return lines.slice(0, 10).join("\n") + fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
+			if (lines.length <= COLLAPSED_READ_LINES) return text;
+			const remaining = lines.length - COLLAPSED_READ_LINES;
+			return lines.slice(0, COLLAPSED_READ_LINES).join("\n") + fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
 		},
 	};
 }

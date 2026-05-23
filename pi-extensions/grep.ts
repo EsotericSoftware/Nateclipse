@@ -1,10 +1,10 @@
 // Grep tool for nicer output than bash grep, provides hints for recovery when
 // there are no matches, and ignores `.git` and other folders.
 
-import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
-import { getLanguageFromPath, highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { getLanguageFromPath, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { statSync } from "node:fs";
