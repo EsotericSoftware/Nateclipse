@@ -4,7 +4,8 @@ import type { ExtensionAPI, ReadToolDetails, Theme, ThemeColor } from "@earendil
 import { createReadToolDefinition, getLanguageFromPath, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
-const COLLAPSED_READ_LINES = 4;
+const COLLAPSED_LINES = 0;
+const SHOW_COLLAPSED_MESSAGE = false;
 
 export default async function (pi: ExtensionAPI) {
 	//(await import("./util/debug")).default(pi);
@@ -76,8 +77,9 @@ export default async function (pi: ExtensionAPI) {
 					.join("\n");
 			}
 
+			const collapsed = isCollapsed(rendered, options.expanded);
 			let out = s.applyCollapse(rendered, options.expanded);
-			if (notice) out += (out ? "\n" : "") + s.dim(notice);
+			if (notice && !collapsed) out += (out ? "\n" : "") + s.dim(notice);
 			return new Text("\n" + out, 0, 0);
 		},
 	});
@@ -93,6 +95,12 @@ function splitTrailingNotice(text: string): { body: string; notice: string | nul
 
 function readPathArg(args: any): string | undefined {
 	return typeof args?.path === "string" ? args.path : typeof args?.file_path === "string" ? args.file_path : undefined;
+}
+
+function isCollapsed(text: string, expanded: boolean): boolean {
+	if (expanded || !text) return false;
+	const maxLines = Math.max(0, Math.floor(COLLAPSED_LINES));
+	return text.split("\n").length > maxLines;
 }
 
 function relPath(absPath: string, cwd: string): string {
@@ -131,11 +139,18 @@ function style(theme: Theme): Style {
 		lineNumber: (v) => v.startsWith(":") ? white(":") + yellow(v.slice(1)) : yellow(v),
 		paddedLine: (line, width) => (line ? yellow(String(line).padStart(width)) + "  " : ""),
 		applyCollapse(text, expanded) {
-			if (expanded) return text;
+			if (expanded || !text) return text;
+			const maxLines = Math.max(0, Math.floor(COLLAPSED_LINES));
 			const lines = text.split("\n");
-			if (lines.length <= COLLAPSED_READ_LINES) return text;
-			const remaining = lines.length - COLLAPSED_READ_LINES;
-			return lines.slice(0, COLLAPSED_READ_LINES).join("\n") + fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
+			if (lines.length <= maxLines) return text;
+			const hidden = lines.length - maxLines;
+			if (maxLines === 0 && !SHOW_COLLAPSED_MESSAGE) return "";
+			const shown = lines.slice(0, maxLines).join("\n");
+			const label = maxLines === 0
+				? `${hidden} line${hidden === 1 ? "" : "s"}`
+				: `${hidden} more line${hidden === 1 ? "" : "s"}`;
+			const suffix = fg("muted", `... (${label},`) + " " + keyHint("app.tools.expand", "to expand") + ")";
+			return shown ? shown + "\n" + suffix : suffix;
 		},
 	};
 }

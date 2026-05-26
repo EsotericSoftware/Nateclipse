@@ -16,6 +16,28 @@ const GREP_MAX_LINE_LENGTH = 500;
 const GREP_CHUNK = 100;
 const TYPE_MAX = 200;
 const ORGANIZE_IMPORTS_MAX = 100;
+const COLLAPSED_LINES = {
+	java_grep: 0,
+	java_members: 0,
+	java_type: 0,
+	java_method: 0,
+	java_references: 0,
+	java_hierarchy: 0,
+	java_callers: 0,
+	java_organize_imports: 10,
+	java_errors: 10,
+} as const;
+const SHOW_COLLAPSED_MESSAGE = {
+	java_grep: false,
+	java_members: false,
+	java_type: false,
+	java_method: false,
+	java_references: false,
+	java_hierarchy: false,
+	java_callers: false,
+	java_organize_imports: false,
+	java_errors: false,
+} as const;
 
 export default async function (pi: ExtensionAPI) {
 	//(await import("./util/debug")).default(pi);
@@ -127,13 +149,13 @@ export default async function (pi: ExtensionAPI) {
 			if (isPartial) return new Text("\n" + s.yellow("Searching..."), 0, 0);
 			const d = r.details;
 			if (!d || (!d.rows?.length && !d.rawLines?.length)) {
-				return new Text("\n" + s.applyCollapse(firstText(r) || "No matches found.", expanded), 0, 0);
+				return new Text("\n" + s.applyCollapse(firstText(r) || "No matches found.", expanded, COLLAPSED_LINES.java_grep, SHOW_COLLAPSED_MESSAGE.java_grep), 0, 0);
 			}
 			let body = d.rawMode
 				? formatRawGrep(s, d.rawLines ?? [], d.cwd ?? "")
 				: formatGrep(s, d.rows ?? [], d.cwd ?? "");
 			if (d.linesTruncated) body += "\n" + s.dim(`[Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars]`);
-			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
+			return new Text("\n" + s.applyCollapse(body, expanded, COLLAPSED_LINES.java_grep, SHOW_COLLAPSED_MESSAGE.java_grep), 0, 0);
 		},
 	});
 
@@ -191,7 +213,7 @@ export default async function (pi: ExtensionAPI) {
 		},
 		renderResult(r, ctx, theme) {
 			const inputType = (r.details as any)?.inputType as string | undefined;
-			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Type not found." }, (data, cwd, s) => {
+			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Type not found.", collapsedLines: COLLAPSED_LINES.java_members, showCollapsedMessage: SHOW_COLLAPSED_MESSAGE.java_members }, (data, cwd, s) => {
 				const entries = data.entries || [];
 				if (!entries.length) {
 					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "Type has no members.");
@@ -272,14 +294,14 @@ export default async function (pi: ExtensionAPI) {
 					const shown = m.endLine - m.line + 1;
 					out += "\n" + s.dim(`[Type is ${m.totalLines} lines, showing first ${shown}. Raise limit to see more.]`);
 				}
-				return new Text("\n" + s.withWarning(s.applyCollapse(out, expanded), r.details.warning), 0, 0);
+				return new Text("\n" + s.withWarning(s.applyCollapse(out, expanded, COLLAPSED_LINES.java_type, SHOW_COLLAPSED_MESSAGE.java_type), r.details.warning), 0, 0);
 			}
 			if (!r.details?.matches) return new Text("\n" + (firstText(r) || "No types found."), 0, 0);
 			const { matches, cwd = "" } = r.details;
 			const inputType = (r.details as any).inputType as string | undefined;
 			const w = maxLineWidth(matches);
 			const body = groupByFile(s, matches, cwd, (t) => s.paddedLine(t.line, w) + s.accent(simplifyType(t.type, inputType, "…")));
-			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
+			return new Text("\n" + s.applyCollapse(body, expanded, COLLAPSED_LINES.java_type, SHOW_COLLAPSED_MESSAGE.java_type), 0, 0);
 		},
 	});
 
@@ -308,7 +330,7 @@ export default async function (pi: ExtensionAPI) {
 		},
 		renderResult(r, ctx, theme) {
 			const inputType = (r.details as any)?.inputType as string | undefined;
-			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Method not found." },
+			return jdtResult(r, ctx, theme, { loading: "Loading...", notFound: "Method not found.", collapsedLines: COLLAPSED_LINES.java_method, showCollapsedMessage: SHOW_COLLAPSED_MESSAGE.java_method },
 				(data, cwd, s) => renderMethod(s, data, cwd, true, inputType));
 		},
 	});
@@ -369,7 +391,7 @@ export default async function (pi: ExtensionAPI) {
 			const parts = [s.red("Ambiguous imports, call again with resolve parameter:")];
 			for (const c of r.details.data.conflicts)
 				parts.push(`${s.accent(c.type)}: ${c.choices.join(", ")}`);
-			return new Text("\n" + s.applyCollapse(parts.join("\n"), expanded), 0, 0);
+			return new Text("\n" + s.applyCollapse(parts.join("\n"), expanded, COLLAPSED_LINES.java_organize_imports, SHOW_COLLAPSED_MESSAGE.java_organize_imports), 0, 0);
 		},
 	});
 
@@ -418,7 +440,7 @@ export default async function (pi: ExtensionAPI) {
 				const enclPart = encl ? s.accent(encl) + "  " : "";
 				return s.paddedLine(e.line, w) + enclPart + s.red(`${severity}: ${e.message}`) + (e.context ? `\n${s.javaCode(stripIndent(e.context))}` : "");
 			}, data.limited ? `Showing ${data.errors.length} of ${data.total}.` : undefined);
-			return new Text("\n" + s.applyCollapse(body, expanded), 0, 0);
+			return new Text("\n" + s.applyCollapse(body, expanded, COLLAPSED_LINES.java_errors, SHOW_COLLAPSED_MESSAGE.java_errors), 0, 0);
 		},
 	});
 
@@ -453,7 +475,7 @@ export default async function (pi: ExtensionAPI) {
 			return result(plain.withWarning(text + suffix, data.warning), { data, cwd: ctx.cwd });
 		},
 		renderResult(r, ctx, theme) {
-			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found." }, (data, cwd, s) => {
+			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found.", collapsedLines: COLLAPSED_LINES.java_references, showCollapsedMessage: SHOW_COLLAPSED_MESSAGE.java_references }, (data, cwd, s) => {
 				if (data.total === 0) {
 					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No references found.");
 					return new Text("\n" + msg, 0, 0);
@@ -497,7 +519,7 @@ export default async function (pi: ExtensionAPI) {
 		},
 		renderResult(r, ctx, theme) {
 			const inputType = (r.details as any)?.inputType as string | undefined;
-			return jdtResult(r, ctx, theme, { loading: "Working...", notFound: "Type not found." }, (data, cwd, s) => {
+			return jdtResult(r, ctx, theme, { loading: "Working...", notFound: "Type not found.", collapsedLines: COLLAPSED_LINES.java_hierarchy, showCollapsedMessage: SHOW_COLLAPSED_MESSAGE.java_hierarchy }, (data, cwd, s) => {
 				const types = data.types || [];
 				if (types.length === 0) {
 					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No types in hierarchy.");
@@ -537,7 +559,7 @@ export default async function (pi: ExtensionAPI) {
 		},
 		renderResult(r, ctx, theme) {
 			const inputType = (r.details as any)?.inputType as string | undefined;
-			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found." }, (data, cwd, s) => {
+			return jdtResult(r, ctx, theme, { loading: "Searching...", notFound: "Type not found.", collapsedLines: COLLAPSED_LINES.java_callers, showCollapsedMessage: SHOW_COLLAPSED_MESSAGE.java_callers }, (data, cwd, s) => {
 				if (data.total === 0) {
 					const msg = data.warning ? s.red(data.warning) : (firstText(r) || "No callers found.");
 					return new Text("\n" + msg, 0, 0);
@@ -925,13 +947,13 @@ function tooManyError(pattern: string, count: number, max: number, unit: string,
 
 // ---- Misc ----
 
-/** Wraps the common renderResult pattern: partial -> loading; no data -> notFound; else render & wrap with warning+collapse.
+/** Wraps the common renderResult pattern: partial -> loading; no data -> notFound; else render & wrap with warning and optional collapse.
  *  The render callback may return a Text to bypass wrapping (for custom empty/error displays). */
 function jdtResult(
 	r: AgentToolResult<JdtDetails | undefined>,
 	{ isPartial, expanded }: ToolRenderResultOptions,
 	theme: Theme,
-	opts: { loading: string; notFound?: string },
+	opts: { loading: string; notFound?: string; collapsedLines?: number; showCollapsedMessage?: boolean },
 	render: (data: JdtData, cwd: string, s: Style) => string | Text,
 ): Text {
 	const s = style(theme);
@@ -940,7 +962,8 @@ function jdtResult(
 	if (!data) return new Text("\n" + (firstText(r) || opts.notFound || "Not found."), 0, 0);
 	const body = render(data, r.details?.cwd ?? "", s);
 	if (body instanceof Text) return body;
-	return new Text("\n" + s.withWarning(s.applyCollapse(body, expanded), data.warning), 0, 0);
+	const output = opts.collapsedLines === undefined ? body : s.applyCollapse(body, expanded, opts.collapsedLines, opts.showCollapsedMessage);
+	return new Text("\n" + s.withWarning(output, data.warning), 0, 0);
 }
 
 /** Extract the first text content from a tool result, handling the TextContent | ImageContent union. */
@@ -1023,7 +1046,7 @@ type Style = {
 	paddedLine: (line: number | string | undefined, width: number) => string;
 	extra: (...args: Array<string | number | undefined | null>) => string;
 	withWarning: (text: string, warning?: string) => string;
-	applyCollapse: (text: string, expanded: boolean) => string;
+	applyCollapse: (text: string, expanded: boolean, maxLines: number, showMessage?: boolean) => string;
 };
 
 function style(theme: Theme): Style {
@@ -1058,12 +1081,19 @@ function style(theme: Theme): Style {
 			return text;
 		},
 		withWarning: (text, warning) => warning ? fg("error", bold(warning)) + "\n" + text : text,
-		applyCollapse(text, expanded) {
-			if (expanded) return text;
+		applyCollapse(text, expanded, maxLinesSetting, showMessage = true) {
+			if (expanded || !text) return text;
+			const maxLines = Math.max(0, Math.floor(maxLinesSetting));
 			const lines = text.split("\n");
-			if (lines.length <= 10) return text;
-			const remaining = lines.length - 10;
-			return lines.slice(0, 10).join("\n") + fg("muted", `\n... (${remaining} more lines,`) + " " + keyHint("app.tools.expand", "to expand") + ")";
+			if (lines.length <= maxLines) return text;
+			const hidden = lines.length - maxLines;
+			if (maxLines === 0 && !showMessage) return "";
+			const shown = lines.slice(0, maxLines).join("\n");
+			const label = maxLines === 0
+				? `${hidden} line${hidden === 1 ? "" : "s"}`
+				: `${hidden} more line${hidden === 1 ? "" : "s"}`;
+			const suffix = fg("muted", `... (${label},`) + " " + keyHint("app.tools.expand", "to expand") + ")";
+			return shown ? shown + "\n" + suffix : suffix;
 		},
 	};
 }

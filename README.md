@@ -10,7 +10,7 @@ Eclipse already has all your Java projects, builds incrementally in the backgrou
 
 ## Pi extensions
 
-Extensions are provided for the fantastic [Pi coding agent](https://pi.dev).
+Extensions are provided for the fantastic [Pi coding agent](https://pi.dev). Each has settings for number of lines shown.
 
 ### nateclipse.ts
 
