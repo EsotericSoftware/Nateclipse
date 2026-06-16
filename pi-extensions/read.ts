@@ -149,7 +149,7 @@ function curlDownload(url: string, destPath: string, signal: AbortSignal | undef
 			reject(new Error("Operation aborted"));
 			return;
 		}
-		const child = spawn("curl", ["-sS", "-f", "-L", "--compressed", "--max-time", "120", "-o", destPath, "--", url], {
+		const child = spawn("curl", ["-sS", "-f", "-L", "--max-time", "120", "-o", destPath, "--", url], {
 			signal,
 		});
 		const err: Buffer[] = [];
