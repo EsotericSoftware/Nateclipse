@@ -53,9 +53,11 @@ export default async function (pi: ExtensionAPI) {
 					void pruneUrlCache();
 					await curlDownload(url, tmp, signal);
 				}
-				return original.execute(toolCallId, { ...params, path: tmp }, signal, onUpdate, ctx);
+				const result = await original.execute(toolCallId, { ...params, path: tmp }, signal, onUpdate, ctx);
+				return rejectUndecodableExpectedImage(url, result);
 			}
-			return original.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await original.execute(toolCallId, params, signal, onUpdate, ctx);
+			return argPath ? rejectUndecodableExpectedImage(argPath, result) : result;
 		},
 		renderCall(params, theme, context) {
 			const s = style(theme);
@@ -110,6 +112,23 @@ export default async function (pi: ExtensionAPI) {
 }
 
 // ---- URL reading (the built-in read tool only handles local files) ----
+
+function expectedImageExtension(pathOrUrl: string): string | undefined {
+	const clean = pathOrUrl.split(/[?#]/)[0];
+	const m = clean.match(/\.([a-z0-9]+)$/i);
+	const ext = m?.[1]?.toLowerCase();
+	return ext && ["jpg", "jpeg", "png", "gif", "webp"].includes(ext) ? ext : undefined;
+}
+
+function rejectUndecodableExpectedImage<T extends { content?: Array<{ type: string; text?: string }> }>(pathOrUrl: string, result: T): T {
+	const ext = expectedImageExtension(pathOrUrl);
+	if (!ext) return result;
+	if (result?.content?.some((c) => c.type === "image")) return result;
+	// If the original tool recognized it as an image but omitted the attachment
+	// (eg, could not resize below the inline image limit), keep that message.
+	if (result?.content?.some((c) => c.type === "text" && /^Read image file \[image\//.test(c.text ?? ""))) return result;
+	throw new Error("Unable to decode image");
+}
 
 async function fileExists(p: string): Promise<boolean> {
 	try {
