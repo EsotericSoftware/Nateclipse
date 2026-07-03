@@ -56,6 +56,10 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
 
 /** Re-orders Java content-assist proposals so that:
  * <ol>
+ * <li>Proposals whose name exactly matches the typed prefix (case-sensitive), regardless of kind, so JDT's subword/camelCase
+ * matching (eg {@code drawSkeletonOutline} for {@code sout}) never outranks an exact match.
+ * <li>Proposals whose name matches the typed prefix ignoring case (eg {@code String} for {@code string}) — never treated as
+ * exact, but still above all fuzzy matches. Ties within either group fall through to the tiers below.
  * <li>Method-stub generators (override method, getter/setter, record accessor, method declaration).
  * <li>Local variables declared <em>above</em> the cursor in the enclosing executable scope, ordered nearest-first.
  * <li>Parameters of the enclosing method/lambda/etc, in declaration order.
@@ -191,6 +195,9 @@ public class CompletionSort extends AbstractProposalSorter {
 	private final Map<ICompletionProposal, Integer> tierCache = new HashMap<>();
 	/** Proposal identity -> fuzzy match score against {@link #activePrefix}. Reset on each context refresh. */
 	private final Map<ICompletionProposal, Integer> templateMatchCache = new HashMap<>();
+	/** Proposal identity -> exact-match rank against {@link #activePrefix}: 0 = case-sensitive match, 1 = case-insensitive match,
+	 * 2 = no match. Reset on each context refresh. */
+	private final Map<ICompletionProposal, Integer> exactMatchCache = new HashMap<>();
 
 	@Override
 	public void beginSorting (ContentAssistInvocationContext context) {
@@ -240,6 +247,7 @@ public class CompletionSort extends AbstractProposalSorter {
 		nameCache.clear();
 		tierCache.clear();
 		templateMatchCache.clear();
+		exactMatchCache.clear();
 		activeProject = null;
 		activePackage = null;
 		currentCuTypes = Collections.emptySet();
@@ -468,6 +476,12 @@ public class CompletionSort extends AbstractProposalSorter {
 	@Override
 	public int compare (ICompletionProposal p1, ICompletionProposal p2) {
 		ensureContext();
+		// Exact name matches always come first, regardless of proposal kind: JDT's subword/camelCase matching can propose
+		// eg drawSkeletonOutline for "sout", which must never outrank a proposal actually named "sout". Case-sensitive
+		// matches beat case-insensitive ones. Ties within a rank fall through to the tier order below.
+		int e1 = exactMatchRank(p1);
+		int e2 = exactMatchRank(p2);
+		if (e1 != e2) return e1 - e2;
 		// Strict tiered ordering. Must be a total order or TimSort throws "Comparison method violates its general contract!".
 		// 0: method-stub generators (override, getter/setter, etc).
 		// 1: locals declared above the cursor (sub-sorted by source position descending = nearest first).
@@ -532,6 +546,23 @@ public class CompletionSort extends AbstractProposalSorter {
 				+ safeDisplay(p));
 		}
 		return t;
+	}
+
+	/** Ranks how exactly the proposal's name matches the typed prefix: 0 = case-sensitive match, 1 = case-insensitive match, 2 =
+	 * no match. Templates are matched by their template name rather than the display string. */
+	private int exactMatchRank (ICompletionProposal p) {
+		Integer cached = exactMatchCache.get(p);
+		if (cached != null) return cached.intValue();
+		int rank = 2;
+		if (!activePrefix.isEmpty()) {
+			String name = isTemplate(p) ? templateName(p) : nameOf(p);
+			if (activePrefix.equals(name))
+				rank = 0;
+			else if (activePrefix.equalsIgnoreCase(name)) //
+				rank = 1;
+		}
+		exactMatchCache.put(p, Integer.valueOf(rank));
+		return rank;
 	}
 
 	private boolean isStrongTemplateMatch (ICompletionProposal p) {
