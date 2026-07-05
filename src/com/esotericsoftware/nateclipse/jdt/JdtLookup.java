@@ -3,12 +3,16 @@ package com.esotericsoftware.nateclipse.jdt;
 
 import static com.esotericsoftware.nateclipse.jdt.JdtUtils.*;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
+import org.eclipse.core.runtime.Path;
+import org.eclipse.jdt.core.ICompilationUnit;
 import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IType;
@@ -33,6 +37,17 @@ public class JdtLookup {
 
 	/** Resolve a type name that may be unqualified. Returns null if it responded with an error. */
 	public static IType resolveTypeOrError (Exchange exchange, String projectName, String typeName) throws Exception {
+		var fileTypes = typesForFilePath(projectName, typeName);
+		if (fileTypes != null) {
+			if (fileTypes.size() == 1) return fileTypes.get(0);
+			if (fileTypes.isEmpty()) {
+				error(exchange, 404, "No Java types in file: " + typeName);
+				return null;
+			}
+			ambiguousTypes(exchange, "Ambiguous file types, use fully qualified name:\n", fileTypes);
+			return null;
+		}
+
 		boolean hasWildcards = typeName.contains("*") || typeName.contains("?");
 
 		// FQN without wildcards: try direct lookup first (fast path for the common case).
@@ -65,19 +80,15 @@ public class JdtLookup {
 		}
 
 		// Multiple matches: list FQNs, capped so broad patterns don't flood the client.
-		var sb = new StringBuilder("Ambiguous, use fully qualified name:\n");
-		int shown = Math.min(types.size(), AMBIGUOUS_TYPE_MAX_SHOWN);
-		for (int i = 0; i < shown; i++) {
-			if (i > 0) sb.append("\n");
-			sb.append(types.get(i).getFullyQualifiedName());
-		}
-		if (types.size() > shown) sb.append("\n...+").append(types.size() - shown).append(" more");
-		error(exchange, 400, sb.toString());
+		ambiguousTypes(exchange, "Ambiguous, use fully qualified name:\n", types);
 		return null;
 	}
 
 	/** Search for types by simple name, FQN, or wildcard pattern. Source types only. */
 	public static ArrayList<IType> searchTypes (String projectName, String typeName) throws CoreException {
+		var fileTypes = typesForFilePath(projectName, typeName);
+		if (fileTypes != null) return fileTypes;
+
 		boolean hasWildcards = typeName.contains("*") || typeName.contains("?");
 
 		// FQN exact match: direct lookup first.
@@ -105,6 +116,48 @@ public class JdtLookup {
 			search(alt, scope, sourceTypeCollector(types));
 		}
 		return types;
+	}
+
+	private static void ambiguousTypes (Exchange exchange, String prefix, ArrayList<IType> types) throws Exception {
+		var sb = new StringBuilder(prefix);
+		int shown = Math.min(types.size(), AMBIGUOUS_TYPE_MAX_SHOWN);
+		for (int i = 0; i < shown; i++) {
+			if (i > 0) sb.append("\n");
+			sb.append(types.get(i).getFullyQualifiedName());
+		}
+		if (types.size() > shown) sb.append("\n...+").append(types.size() - shown).append(" more");
+		error(exchange, 400, sb.toString());
+	}
+
+	private static ArrayList<IType> typesForFilePath (String projectName, String typeName) throws CoreException {
+		if (typeName == null) return null;
+		var value = typeName.trim();
+		if (!value.toLowerCase(Locale.ROOT).endsWith(".java")) return null;
+		var file = new File(value);
+		if (!file.isAbsolute() || !file.isFile()) return null;
+
+		var ifile = ResourcesPlugin.getWorkspace().getRoot().getFileForLocation(Path.fromOSString(file.getAbsolutePath()));
+		if (ifile == null || !ifile.exists()) return new ArrayList<>();
+		if (projectName != null && !projectName.isEmpty() && !ifile.getProject().getName().equals(projectName))
+			return new ArrayList<>();
+		var javaElement = JavaCore.create(ifile);
+		if (!(javaElement instanceof ICompilationUnit cu)) return new ArrayList<>();
+		return primaryTypes(cu, file.getName());
+	}
+
+	private static ArrayList<IType> primaryTypes (ICompilationUnit cu, String fileName) throws JavaModelException {
+		var result = new ArrayList<IType>();
+		var dot = fileName.lastIndexOf('.');
+		var baseName = dot >= 0 ? fileName.substring(0, dot) : fileName;
+		for (var type : cu.getTypes()) {
+			if (type.exists() && type.getElementName().equals(baseName)) {
+				result.add(type);
+				return result;
+			}
+		}
+		for (var type : cu.getTypes())
+			if (type.exists()) result.add(type);
+		return result;
 	}
 
 	public static IType findType (String projectName, String qualifiedName) throws JavaModelException {

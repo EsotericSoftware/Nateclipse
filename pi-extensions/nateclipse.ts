@@ -66,16 +66,22 @@ export default async function (pi: ExtensionAPI) {
 			return new Text(s.tool("java_grep") + " " + s.yellow(params.pattern) + " " + s.accent(params.type) + s.extra("project", params.project) + " " + s.yellow(flags), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			// Multi-match /java_type responses are grouped as { file, types: [...] }. Skip lines=true so server avoids buffer loads.
-			const typeData = await jdt("/java_type", { type: params.type, project: params.project }, signal);
-			if (typeData._error) throw new Error(`Type not found: ${params.type}`);
-			const matches = typeData.matches || [];
-			const files = matches.filter((m: any) => m.file).map((m: any) => m.file as string);
-			if (files.length === 0) throw new Error(`Type not found: ${params.type}`);
-			if (files.length > GREP_MAX_FILES) {
-				throw tooManyError(params.type, files.length, GREP_MAX_FILES, "files",
-					matches.flatMap((m: any) => m.types || (m.type ? [m.type] : [])),
-					"Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
+			let files: string[];
+			const typeFile = existingJavaFileFromTypeArg(params.type, ctx.cwd);
+			if (typeFile) {
+				files = [typeFile];
+			} else {
+				// Multi-match /java_type responses are grouped as { file, types: [...] }. Skip lines=true so server avoids buffer loads.
+				const typeData = await jdt("/java_type", { type: params.type, project: params.project }, signal);
+				if (typeData._error) throw new Error(`Type not found: ${params.type}`);
+				const matches = typeData.matches || [];
+				files = matches.filter((m: any) => m.file).map((m: any) => m.file as string);
+				if (files.length === 0) throw new Error(`Type not found: ${params.type}`);
+				if (files.length > GREP_MAX_FILES) {
+					throw tooManyError(params.type, files.length, GREP_MAX_FILES, "files",
+						matches.flatMap((m: any) => m.types || (m.type ? [m.type] : [])),
+						"Narrow the pattern or for Java symbols use: java_references, java_callers, java_hierarchy");
+				}
 			}
 
 			const flagArgs = effectiveGrepFlags(params.pattern, splitFlags(params.flags));
@@ -205,7 +211,8 @@ export default async function (pi: ExtensionAPI) {
 			return new Text(s.tool("java_members") + " " + s.accent(params.type) + s.extra("project", params.project), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const data = await jdt("/java_members", params, signal);
+			const serverParams = withTypePathParam(params, ctx.cwd);
+			const data = await jdt("/java_members", serverParams, signal);
 			if (data._error) throw new Error(data._error + ": " + params.type);
 			const entries = data.entries || [];
 			if (!entries.length) throw new Error(data.warning || "Type has no members: " + params.type);
@@ -244,9 +251,10 @@ export default async function (pi: ExtensionAPI) {
 			return new Text(s.tool("java_type") + " " + s.accent(params.type) + s.extra("project", params.project, "limit", params.limit), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			rejectBareWildcard("java_type", params.type, "Narrow the pattern");
+			const serverParams = withTypePathParam(params, ctx.cwd);
+			rejectBareWildcard("java_type", serverParams.type, "Narrow the pattern");
 			// lines=true asks server for per-type line numbers in multi-match responses. Only set by this tool.
-			const data = await jdt("/java_type", { ...params, lines: true }, signal);
+			const data = await jdt("/java_type", { ...serverParams, lines: true }, signal);
 			if (data._error) throw new Error(data._error);
 			const rawMatches = data.matches || [];
 			if (rawMatches.length === 0) throw new Error("No matching types for: " + params.type);
@@ -323,7 +331,8 @@ export default async function (pi: ExtensionAPI) {
 			return new Text(s.tool("java_method") + typeRef(s, params) + s.extra("project", params.project), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const data = await jdt("/java_method", params, signal);
+			const serverParams = withTypePathParam(params, ctx.cwd);
+			const data = await jdt("/java_method", serverParams, signal);
 			if (data._error) throw new Error(data._error);
 			const inputType = params.type;
 			return result(plain.withWarning(renderMethod(plain, data, ctx.cwd, false, inputType), data.warning), { data, cwd: ctx.cwd, inputType });
@@ -356,7 +365,13 @@ export default async function (pi: ExtensionAPI) {
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if (!params.type && !params.file) throw new Error("Missing parameter: file or type");
-			if (params.type) {
+			const path = require("node:path");
+			const serverParams: Record<string, any> = { ...params };
+			const typeAsFile = !params.file && params.type ? existingJavaFileFromTypeArg(params.type, ctx.cwd) : undefined;
+			if (typeAsFile) {
+				delete serverParams.type;
+				serverParams.file = typeAsFile;
+			} else if (params.type) {
 				rejectBareWildcard("java_organize_imports", params.type, "Narrow the pattern or target specific files, this tool writes to every match");
 				// Pre-resolve to enforce the write-scope cap before the server mutates anything.
 				const typeData = await jdt("/java_type", { type: params.type }, signal);
@@ -370,9 +385,7 @@ export default async function (pi: ExtensionAPI) {
 						"Narrow the pattern or target specific files, this tool writes to every match");
 				}
 			}
-			const path = require("node:path");
-			const serverParams: Record<string, any> = { ...params };
-			if (!params.type) serverParams.file = path.resolve(ctx.cwd, params.file);
+			if (!serverParams.type) serverParams.file = path.resolve(ctx.cwd, serverParams.file);
 			const data = await jdt("/java_organize_imports", serverParams, signal);
 			if (data._error) throw new Error(data._error + ": " + (params.type || params.file));
 			if (data.organized) return result("Success", {});
@@ -467,7 +480,8 @@ export default async function (pi: ExtensionAPI) {
 				+ s.extra("project", params.project, "access", params.access, "limit", params.limit, "file", file), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const data = await jdt("/java_references", params, signal);
+			const serverParams = withTypePathParam(params, ctx.cwd);
+			const data = await jdt("/java_references", serverParams, signal);
 			if (data._error) throw new Error(data._error);
 			if (data.total === 0) throw new Error(data.warning || "No references for: " + typePlain(params));
 			const text = groupByFile(plain, data.references, ctx.cwd, (r) => formatRefRowPlain(r));
@@ -510,7 +524,8 @@ export default async function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const data = await jdt("/java_hierarchy", params, signal);
+			const serverParams = withTypePathParam(params, ctx.cwd);
+			const data = await jdt("/java_hierarchy", serverParams, signal);
 			if (data._error) throw new Error(data._error);
 			const types = data.types || [];
 			if (types.length === 0) throw new Error(data.warning || "No types in hierarchy for: " + typePlain(params));
@@ -548,7 +563,8 @@ export default async function (pi: ExtensionAPI) {
 			return new Text(s.tool("java_callers") + typeRef(s, params) + s.extra("project", params.project, "limit", params.limit), 0, 0);
 		},
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const data = await jdt("/java_callers", params, signal);
+			const serverParams = withTypePathParam(params, ctx.cwd);
+			const data = await jdt("/java_callers", serverParams, signal);
 			if (data._error) throw new Error(data._error);
 			if (data.total === 0) throw new Error(data.warning || "No callers for: " + typePlain(params));
 			const text = data.overloads && data.overloads.length > 1
@@ -981,6 +997,28 @@ function maxLineWidth(items: any[]): number {
 
 function result<T>(text: string, details: T): AgentToolResult<T> {
 	return { content: [{ type: "text", text }], details };
+}
+
+function withTypePathParam<T extends { type?: string }>(params: T, cwd: string): T {
+	const typeFile = params.type ? existingJavaFileFromTypeArg(params.type, cwd) : undefined;
+	return typeFile ? { ...params, type: typeFile } : params;
+}
+
+function existingJavaFileFromTypeArg(typeArg: string, cwd: string): string | undefined {
+	const value = typeArg.trim();
+	if (!value || !looksLikePath(value) || !/\.java$/i.test(value)) return undefined;
+	const path = require("node:path");
+	const fs = require("node:fs");
+	const resolved = /^[A-Za-z]:[\\/]/.test(value) ? value : path.resolve(cwd, value);
+	try {
+		return fs.statSync(resolved).isFile() ? resolved : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function looksLikePath(value: string): boolean {
+	return /[\\/]/.test(value) || /\.java$/i.test(value);
 }
 
 // JDK stdlib types whose Javadoc is universally known and just wastes tokens when shown as an incidental

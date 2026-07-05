@@ -6,8 +6,10 @@ import static com.esotericsoftware.nateclipse.jdt.JdtUtils.*;
 import static java.nio.charset.StandardCharsets.*;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Locale;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
@@ -45,6 +47,15 @@ public class OrganizeImportsHandler {
 		String filePath = p.get("file");
 		String typeName = p.get("type");
 		String resolveStr = p.get("resolve");
+
+		// A path-like value passed as "type" is usually a positional tool-call mistake. Treat it as "file" when safe.
+		if (typeName != null && filePath == null) {
+			var typeAsFile = existingJavaFileFromTypeArg(typeName);
+			if (typeAsFile != null) {
+				filePath = typeAsFile;
+				typeName = null;
+			}
+		}
 
 		// Resolve type to file if provided.
 		if (typeName != null) {
@@ -133,6 +144,18 @@ public class OrganizeImportsHandler {
 			cu.getBuffer().setContents(new String(originalContent, UTF_8));
 			respond(exchange, false, conflicts);
 		}
+	}
+
+	private String existingJavaFileFromTypeArg (String typeName) {
+		var value = typeName.trim();
+		if (!looksLikePath(value) || !value.toLowerCase(Locale.ROOT).endsWith(".java")) return null;
+		var file = new File(value);
+		if (!file.isAbsolute() || !file.isFile()) return null;
+		return file.getAbsolutePath();
+	}
+
+	private boolean looksLikePath (String value) {
+		return value.indexOf('/') >= 0 || value.indexOf('\\') >= 0 || value.toLowerCase(Locale.ROOT).endsWith(".java");
 	}
 
 	/** Resets the file, sets explicitResolve[simpleName]=candidate, organizes imports, builds. Returns true if no errors after. */
