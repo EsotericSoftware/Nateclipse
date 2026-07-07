@@ -157,7 +157,7 @@ public class CompleteHandler {
 
 	// ---- Member completion ----
 
-	record MemberRow (String name, String kind, String type, String params, String declaring, int exactRank, int typeIndex,
+	record MemberRow (String name, String kind, String type, String params, String declaring, int rank, int typeIndex,
 		int depth) {}
 
 	static private void members (Exchange exchange, ArrayList<IType> types, String pattern, boolean statics, int limit)
@@ -171,7 +171,7 @@ public class CompleteHandler {
 			}
 		}
 		rows.sort( (a, b) -> {
-			if (a.exactRank() != b.exactRank()) return a.exactRank() - b.exactRank();
+			if (a.rank() != b.rank()) return a.rank() - b.rank();
 			if (a.typeIndex() != b.typeIndex()) return a.typeIndex() - b.typeIndex();
 			if (a.depth() != b.depth()) return a.depth() - b.depth();
 			int c = a.name().compareToIgnoreCase(b.name());
@@ -218,10 +218,11 @@ public class CompleteHandler {
 				if (isStatic != statics) continue;
 				if (depth > 0 && Flags.isPrivate(flags)) continue;
 				String name = field.getElementName();
-				if (!matches(pattern, name)) continue;
+				int rank = matchRank(pattern, name);
+				if (rank < 0) continue;
 				if (!seen.add(typeIndex + ":F:" + name)) continue;
 				rows.add(new MemberRow(name, "field", Signature.getSignatureSimpleName(field.getTypeSignature()), null,
-					t.getElementName(), exactRank(pattern, name), typeIndex, depth));
+					t.getElementName(), rank, typeIndex, depth));
 			}
 			for (var method : t.getMethods()) {
 				if (method.isConstructor()) continue;
@@ -230,7 +231,8 @@ public class CompleteHandler {
 				if (depth > 0 && Flags.isPrivate(flags)) continue;
 				String name = method.getElementName();
 				if (!isIdentifier(name)) continue; // Skip <clinit> and synthetic names.
-				if (!matches(pattern, name)) continue;
+				int rank = matchRank(pattern, name);
+				if (rank < 0) continue;
 				var paramTypes = method.getParameterTypes();
 				var params = new StringBuilder();
 				for (int i = 0; i < paramTypes.length; i++) {
@@ -239,16 +241,17 @@ public class CompleteHandler {
 				}
 				if (!seen.add(typeIndex + ":M:" + name + "(" + params + ")")) continue;
 				rows.add(new MemberRow(name, "method", Signature.getSignatureSimpleName(method.getReturnType()), params.toString(),
-					t.getElementName(), exactRank(pattern, name), typeIndex, depth));
+					t.getElementName(), rank, typeIndex, depth));
 			}
 			if (statics) {
 				for (var nested : t.getTypes()) {
 					int flags = nested.getFlags();
 					if (depth > 0 && Flags.isPrivate(flags)) continue;
 					String name = nested.getElementName();
-					if (!matches(pattern, name)) continue;
+					int rank = matchRank(pattern, name);
+					if (rank < 0) continue;
 					if (!seen.add(typeIndex + ":T:" + name)) continue;
-					rows.add(new MemberRow(name, "type", null, null, t.getElementName(), exactRank(pattern, name), typeIndex, depth));
+					rows.add(new MemberRow(name, "type", null, null, t.getElementName(), rank, typeIndex, depth));
 				}
 			}
 		}
@@ -292,14 +295,36 @@ public class CompleteHandler {
 
 	// ---- Matching ----
 
-	static private boolean matches (String pattern, String name) {
-		if (pattern.isEmpty()) return true;
+	/** Member match quality: 0 exact, 1 exact ignoring case, 2 prefix, 3 prefix ignoring case, 4 camelCase, 5 subword
+	 * (pattern matches at a camel-hump or underscore boundary, eg "bo" matches getBounds), -1 no match. Wildcard patterns
+	 * and the empty pattern match everything at subword quality so the alphabetical tiebreaker orders them. */
+	static private int matchRank (String pattern, String name) {
+		if (pattern.isEmpty()) return 5;
 		if (hasWildcards(pattern)) {
 			String p = pattern.endsWith("*") || pattern.endsWith("?") ? pattern : pattern + "*";
-			return CharOperation.match(p.toCharArray(), name.toCharArray(), false);
+			return CharOperation.match(p.toCharArray(), name.toCharArray(), false) ? 5 : -1;
 		}
-		if (name.regionMatches(true, 0, pattern, 0, pattern.length())) return true;
-		return SearchPattern.camelCaseMatch(pattern, name);
+		if (pattern.equals(name)) return 0;
+		if (pattern.equalsIgnoreCase(name)) return 1;
+		if (name.startsWith(pattern)) return 2;
+		if (name.regionMatches(true, 0, pattern, 0, pattern.length())) return 3;
+		if (SearchPattern.camelCaseMatch(pattern, name)) return 4;
+		if (subwordMatch(pattern, name)) return 5;
+		return -1;
+	}
+
+	/** True when {@code pattern} matches case-insensitively at an interior word boundary of {@code name}: an uppercase
+	 * camel hump (getBounds -> Bounds), after an underscore (MAX_VALUE -> VALUE), or a letter following a digit. */
+	static private boolean subwordMatch (String pattern, String name) {
+		int length = pattern.length();
+		for (int i = 1, n = name.length() - length; i <= n; i++) {
+			char c = name.charAt(i), prev = name.charAt(i - 1);
+			boolean boundary = Character.isUpperCase(c) //
+				|| prev == '_' || prev == '$' //
+				|| (Character.isLetter(c) && Character.isDigit(prev));
+			if (boundary && name.regionMatches(true, i, pattern, 0, length)) return true;
+		}
+		return false;
 	}
 
 	/** 0 = case-sensitive match, 1 = case-insensitive match, 2 = no exact match. */
