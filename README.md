@@ -29,6 +29,8 @@ Tools provided:
 * `java_callers` Show all callers of a Java method.
 * `java_classpath` Provides the classpath for a Java project and all dependencies, so main classes can be run in the project.
 
+Also, at the Pi prompt press `ctrl+space` to complete type names. `Name.` completes static members and nested types. `Name#` completes instance members, including inherited. Bind `\u001b[32;5u` if your terminal eats `ctrl+space`.
+
 ### edit.ts
 
 This extension improves the edit tool by providing context when edits fail:

@@ -1,10 +1,10 @@
 // Provides tools to access Eclipse JDT through the Nateclipse plugin.
 
 import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type TOptional, type TString } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { matchesKey, Text, type AutocompleteItem, type AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import os from "node:os";
 
 const PORT = 9001;
@@ -614,6 +614,128 @@ export default async function (pi: ExtensionAPI) {
 			return new Text("\n" + s.filePath(r.details.data.file), 0, 0);
 		},
 	});
+
+	// ---- Java completion (Ctrl+Space) ----
+	const completion = { start: false, active: false };
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+
+		// The editor install is deferred so it runs after every other extension's session_start. Extensions that
+		// wrap the editor factory (eg pi-double-paste) render their own state while delegating input to the inner
+		// editor, so any editor we install before them becomes a hidden input sink and typing breaks. Installing
+		// last, wrapping whatever factory is current, and patching handleInput on the *instance* keeps the active
+		// editor fully functional; we only intercept Ctrl+Space.
+		setTimeout(() => {
+			const previous = ctx.ui.getEditorComponent();
+			ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+				const editor = previous ? previous(tui, theme, keybindings) : new CustomEditor(tui, theme, keybindings);
+				const innerHandleInput = editor.handleInput.bind(editor);
+				editor.handleInput = (data: string) => {
+					if (matchesKey(data, "ctrl+space")) {
+						completion.start = true;
+						// No public API to open the autocomplete popup; force-trigger like Tab does internally.
+						// explicitTab makes a single match auto-insert, like Eclipse.
+						(editor as any).requestAutocomplete?.({ force: true, explicitTab: true });
+						return;
+					}
+					completion.start = false; // A pending Ctrl+Space request is stale once another key arrives.
+					innerHandleInput(data);
+					if (completion.active && !(editor as any).isShowingAutocomplete?.()) completion.active = false;
+				};
+				return editor;
+			});
+		}, 300);
+
+		ctx.ui.addAutocompleteProvider((current) => ({
+			async getSuggestions(lines, cursorLine, cursorCol, options) {
+				const starting = completion.start;
+				completion.start = false;
+				// While the popup is open the editor re-queries on every keystroke with force preserved, so an active
+				// session keeps serving Java completions as the user narrows the token.
+				if (!starting && !(completion.active && options.force)) {
+					return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				}
+				let suggestions: AutocompleteSuggestions | null;
+				try {
+					suggestions = await javaCompletions(lines, cursorLine, cursorCol, ctx.cwd, options.signal);
+				} catch (e: any) {
+					completion.active = false;
+					// Surface errors for the explicit Ctrl+Space, so a missing/old plugin isn't a silent no-op.
+					if (starting && !options.signal.aborted) ctx.ui.notify(String(e?.message ?? e), "error");
+					return null;
+				}
+				if (!suggestions) {
+					// Never fall through to file completion mid-session; just close the popup.
+					completion.active = false;
+					return null;
+				}
+				completion.active = true;
+				return suggestions;
+			},
+			applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+				if (!completion.active) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+				completion.active = false; // Session ends on insertion.
+				const line = lines[cursorLine] ?? "";
+				const start = cursorCol - prefix.length;
+				const newLines = [...lines];
+				newLines[cursorLine] = line.slice(0, start) + item.value + line.slice(cursorCol);
+				return { lines: newLines, cursorLine, cursorCol: start + item.value.length };
+			},
+			shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+				if (completion.start || completion.active) return true;
+				return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+			},
+		}));
+	});
+}
+
+// ---- Java completion helpers ----
+
+const COMPLETE_LIMIT = 25;
+
+// Trailing Java-ish token before the cursor: identifier chars, dots, wildcards, and an optional #member part.
+const JAVA_TOKEN_REGEX = /[A-Za-z_$*?][A-Za-z0-9_$.*?]*#?[A-Za-z0-9_$*?]*$/;
+
+async function javaCompletions(
+	lines: string[],
+	cursorLine: number,
+	cursorCol: number,
+	cwd: string,
+	signal: AbortSignal,
+): Promise<AutocompleteSuggestions | null> {
+	const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
+	const match = before.match(JAVA_TOKEN_REGEX);
+	if (!match) return null;
+	const token = match[0];
+	if (before[before.length - token.length - 1] === "@") return null; // @file completion territory.
+	const data = await jdt("/java_complete", { token, limit: COMPLETE_LIMIT, cwd }, signal);
+	if (data._error) {
+		if (String(data._error).startsWith("404"))
+			throw new Error("Eclipse is running a Nateclipse build without /java_complete, deploy the latest plugin");
+		throw new Error(String(data._error));
+	}
+	if (!Array.isArray(data.items) || data.items.length === 0) return null;
+	if (data.kind === "members") {
+		// Only the member part after the last . or # is replaced, keeping the separator the user typed.
+		const sep = Math.max(token.lastIndexOf("#"), token.lastIndexOf("."));
+		return { prefix: token.slice(sep + 1), items: data.items.map(memberCompletionItem) };
+	}
+	// Qualified tokens are replaced with the FQN, bare tokens with the simple name.
+	const qualified = token.includes(".");
+	return { prefix: token, items: data.items.map((it: any) => typeCompletionItem(it, qualified)) };
+}
+
+function typeCompletionItem(it: any, qualified: boolean): AutocompleteItem {
+	return { value: qualified ? it.fqn : it.name, label: it.name, description: it.container || undefined };
+}
+
+function memberCompletionItem(it: any): AutocompleteItem {
+	let description: string;
+	if (it.kind === "method") description = `(${it.params ?? ""})` + (it.type ? `: ${it.type}` : "");
+	else if (it.kind === "field") description = it.type ? `: ${it.type}` : "";
+	else description = "type";
+	if (it.declaring) description = description ? `${description} \u2014 ${it.declaring}` : it.declaring;
+	return { value: it.name, label: it.name, description: description || undefined };
 }
 
 // JDT server responses are loosely shaped; we access fields ad hoc.

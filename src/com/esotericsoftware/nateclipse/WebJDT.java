@@ -35,6 +35,7 @@ import org.eclipse.jdt.core.search.SearchMatch;
 import org.eclipse.jdt.core.search.SearchPattern;
 import org.eclipse.jdt.launching.JavaRuntime;
 
+import com.esotericsoftware.nateclipse.jdt.CompleteHandler;
 import com.esotericsoftware.nateclipse.jdt.JdtUtils.Params;
 import com.esotericsoftware.nateclipse.jdt.OrganizeImportsHandler;
 import com.esotericsoftware.nateclipse.jdt.SuperMethodCollector;
@@ -62,6 +63,7 @@ public class WebJDT extends WebServer {
 		case "/java_method" -> java_method(exchange);
 		case "/java_callers" -> java_callers(exchange);
 		case "/java_resolve_type" -> java_resolve_type(exchange);
+		case "/java_complete" -> CompleteHandler.handle(exchange);
 		case "/java_organize_imports" -> organizeImports.handle(exchange);
 		case "/java_classpath" -> java_classpath(exchange);
 		case "/java_enclosing" -> java_enclosing(exchange);
