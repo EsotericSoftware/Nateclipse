@@ -8,6 +8,18 @@ An Eclipse plugin exposes JDT functionality over HTTP so coding agents (or other
 
 Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, check compilation succeeds, and more, without wasting tokens on `grep`. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
 
+## Installation
+
+Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases), put it in your `Eclipse/dropins` folder, then restart Eclipse.
+
+To install the Pi extensions:
+
+```
+pi install git:github.com/EsotericSoftware/Nateclipse
+```
+
+The `java_*` Pi tools require Eclipse to be running with the Nateclipse plugin loaded.
+
 ## Pi extensions
 
 Extensions are provided for the fantastic [Pi coding agent](https://pi.dev). Each has settings for number of lines shown.
@@ -29,7 +41,11 @@ Tools provided:
 * `java_callers` Show all callers of a Java method.
 * `java_classpath` Provides the classpath for a Java project and all dependencies, so main classes can be run in the project.
 
-Also, at the Pi prompt press `ctrl+space` to complete type names. `Name.` completes static members and nested types. `Name#` completes instance members, including inherited. Bind `\u001b[32;5u` if your terminal eats `ctrl+space`.
+Also, at the Pi prompt press `ctrl+space` to complete type names. `Name.` completes static members and nested types. `Name#` completes instance members, including inherited. Bind`ctrl+space` to `\u001b[32;5u` if your terminal eats `\u0000` (as Windows Terminal does).
+
+![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/types.png?raw=true)
+
+![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/members.png?raw=true)
 
 ### edit.ts
 
@@ -43,9 +59,25 @@ This extension improves the edit tool by providing context when edits fail:
 
 This extension provides a grep tool. It gives nicer output than making the agent use bash grep, provides hints for recovery when there are no matches, and ignores `.git` and other folders. Agent usage matches bash grep, unlike Pi's grep tool (disabled by default) that has its own parameters.
 
+### filter.ts
+
+This extension collapses agent turns once they are complete, greatly reducing session history noise. `ctrl+F` to toggle, for when you actually need to read that junk.
+
+### image-pruner.ts
+
+This extension prunes old image blocks from the LLM request context. If the agent is reading 5+ images, this prevents your context from filling up too quickly.
+
+### usage.ts
+
+This extension shows Codex or Claude 7 day and 5 hour usage: a percentage for usage remaining and the amount of time until usage is refreshed. Shares across Pi instances so you aren't hammering the remote service.
+
+### retry.ts
+
+This extension automatically retries if the agent fails with a retryable error not covered by pi's built-in retry. Also adds `/retry` or pressing `enter` on an empty editor to retry the last prompt.
+
 ### read.ts
 
-This extensions delegates to Pi's read tool, so it provides the exact same functionality, but it renders using styling consistent with all other Nateclipse tools.
+This extension delegates to Pi's read tool, so it provides the exact same functionality, but it renders using styling consistent with all other Nateclipse tools. With `filter.ts` you'll rarely look at it anyway.
 
 ## Completion sorting
 
@@ -66,13 +98,3 @@ Before:
 
 After:
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/after.png?raw=true)
-
-## Installation
-
-Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases) and put it in your `Eclipse/dropins` folder.
-
-To install the Pi extension, copy or symlink them:
-
-```
-cp pi-extensions/*.ts ~/.pi/agent/extensions/
-```
