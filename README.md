@@ -10,7 +10,7 @@ Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering a
 
 ## Installation
 
-Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases), put it in your `Eclipse/dropins` folder, then restart Eclipse.
+Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases), put it in your `Eclipse/dropins` folder, and restart Eclipse.
 
 Then to install the Pi extensions:
 
