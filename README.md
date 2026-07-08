@@ -4,9 +4,21 @@ This project improves your Java coding experience when using Eclipse and the fan
 
 Isn't Eclipse ancient? Yes, but it has an amazing compiler. It does real incremental compilation so the bytecode is ready as soon as a file is changed. Even files with errors can be compiled, as much as possible. It really is goddamned excellent and Nateclipse lets it pair perfectly with Pi.
 
-Pi gives you a prompt to talk to any LLM and gives the LLM tools to do work. With Pi it's as good as it gets: just you, your prompts, and the model. Unlike Claude Code or Codex, there's no long system prompt filled with garbage or janky extra features.
+Pi gives you a prompt to talk to any LLM and gives the LLM tools to do work. With Pi it's as good as it gets: just you, your prompts, and the model. Unlike Claude Code and friends, there's no long system prompt filled with garbage or janky extra features.
 
 Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering around with `grep`. Giving IDE tools to the coding agent is obviously great and the rest of the provided Pi extensions further improve the experience.
+
+### Highlights:
+
+- AI mucking with imports is wasteful. It has to read what is there, decide where to put new imports, do the edit, check for errors, and if it missed any repeat. With Nateclipse it runs `java_organize_imports` and it's done. If there is ambiguity the plugin gives it and the AI chooses.
+- To check compilation normally AI has to get the classpath right and mess with `javac`, or maybe you have build scripts it has to run and wait for. Instead, as soon as files are edited, Eclipse instantly recompiles incrementally. AI just runs `java_errors` to check for compilation errors.
+- Similarly, if AI needs to run code, it needs to get your classpath right. For complex projects that can suck. Eclipse already knows, so with Nateclipse AI runs `java_classpath` for a particular project to get the classpath needed.
+- When you prompt about a specific class name, to read that class AI has to find it on disk. When you have multiple projects, AI will look in the wrong places and waste turns doing `find`. With Nateclipse, it can `java_grep` and read source code by class name without caring where the file is on disk.
+- When AI needs to read a method, normally it'll `grep`, then read a chunk from that offset. It almost always undershoots and wastes tokens or overshoots and needs more turns. With Nateclipse `java_method` gives it the method source in one go.
+- Giving Eclipse IDE tools to AI makes it more efficient and accurate: find references, find callers/callees, see class hierarchy, list all members. So far it doesn't get renaming or other refactoring tools, only read only tools.
+- Nateclipse makes `ctrl+space` Java type and member completion work at the Pi prompt.
+- Included are a few other Pi extensions which I consider crucial for any Pi usage, even though they are not related to Eclipse. In particular `filter.ts` has made using Pi a lot more comfortable. It collapses AI thinking and tool usage for past turns. It can be toggled off when you want to see that stuff, but in practice often that's not needed.
+- Also included are improvements to completion and type lookup inside Eclipse, as well as better editor tab sizing.
 
 ## Installation
 
