@@ -1,6 +1,24 @@
 ## Nateclipse
 
-This Eclipse plugin improves your Java coding experience.
+This project improves your Java coding experience when using Eclipse and the fantastic [Pi coding harness](https://pi.dev).
+
+Isn't Eclipse ancient? Yes, but it has an amazing compiler. It does real incremental compilation so the bytecode is ready as soon as a file is changed. Even files with errors can be compiled, as much as possible. It really is goddamned excellent.
+
+Pi gives you a prompt to talk to any LLM and gives the LLM tools to do work. With Pi it's as good as it gets: just you, your prompts, and the model. Unlike Claude Code or Codex, there's no long system prompt filled with garbage or janky extra features.
+
+Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering around with grep. Giving the coding agent IDE tools is obviously great and the rest of the provided Pi extensions further improve the experience.
+
+## Installation
+
+Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases), put it in your `Eclipse/dropins` folder, then restart Eclipse.
+
+Then to install the Pi extensions:
+
+```
+pi install git:github.com/EsotericSoftware/Nateclipse
+```
+
+The `java_*` Pi tools require Eclipse to be running with the Nateclipse plugin loaded. The rest of the provided Pi extensions are optional and don't need Eclipse. They are handy for all Pi usage.
 
 ## JDT API
 
@@ -8,21 +26,7 @@ An Eclipse plugin exposes JDT functionality over HTTP so coding agents (or other
 
 Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, check compilation succeeds, and more, without wasting tokens on `grep`. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
 
-## Installation
-
-Get the JAR from the [latest release](https://github.com/EsotericSoftware/Nateclipse/releases), put it in your `Eclipse/dropins` folder, then restart Eclipse.
-
-To install the Pi extensions:
-
-```
-pi install git:github.com/EsotericSoftware/Nateclipse
-```
-
-The `java_*` Pi tools require Eclipse to be running with the Nateclipse plugin loaded.
-
 ## Pi extensions
-
-Extensions are provided for the fantastic [Pi coding agent](https://pi.dev). Each has settings for number of lines shown.
 
 ### nateclipse.ts
 
@@ -41,11 +45,19 @@ Tools provided:
 * `java_callers` Show all callers of a Java method.
 * `java_classpath` Provides the classpath for a Java project and all dependencies, so main classes can be run in the project.
 
-Also, at the Pi prompt press `ctrl+space` to complete type names. `Name.` completes static members and nested types. `Name#` completes instance members, including inherited. Bind`ctrl+space` to `\u001b[32;5u` if your terminal eats `\u0000` (as Windows Terminal does).
+Also, at the Pi prompt press `ctrl+space` to complete type names, just like in Eclipse (camelCase, `*`, etc). `Name.` completes static members and nested types. `Name#` completes instance members, including inherited. Bind`ctrl+space` to `\u001b[32;5u` if your terminal eats `\u0000` (as Windows Terminal does).
 
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/types.png?raw=true)
 
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/members.png?raw=true)
+
+### filter.ts
+
+This extension collapses agent turns once they are complete, greatly reducing session history noise. `ctrl+F` to toggle, for when you actually need to read that junk.
+
+### usage.ts
+
+This extension shows Codex or Claude 7 day and 5 hour usage: a percentage for usage remaining and the amount of time until usage is refreshed. Shares across Pi instances so you aren't hammering the remote service.
 
 ### edit.ts
 
@@ -59,17 +71,9 @@ This extension improves the edit tool by providing context when edits fail:
 
 This extension provides a grep tool. It gives nicer output than making the agent use bash grep, provides hints for recovery when there are no matches, and ignores `.git` and other folders. Agent usage matches bash grep, unlike Pi's grep tool (disabled by default) that has its own parameters.
 
-### filter.ts
-
-This extension collapses agent turns once they are complete, greatly reducing session history noise. `ctrl+F` to toggle, for when you actually need to read that junk.
-
 ### image-pruner.ts
 
 This extension prunes old image blocks from the LLM request context. If the agent is reading 5+ images, this prevents your context from filling up too quickly.
-
-### usage.ts
-
-This extension shows Codex or Claude 7 day and 5 hour usage: a percentage for usage remaining and the amount of time until usage is refreshed. Shares across Pi instances so you aren't hammering the remote service.
 
 ### retry.ts
 
@@ -81,17 +85,17 @@ This extension delegates to Pi's read tool, so it provides the exact same functi
 
 ## Completion sorting
 
-Eclipse seems to sort completions randomly. This plugin makes it smarter by tracking your most recently used types and projects. Types defined in the same file and project are preferred, and other reasonable logic. The types you are likely to choose appear higher in the list, just imagine.
+Eclipse seems to sort completions semi-randomly by default. This plugin makes it smarter by tracking your most recently used types and projects. Types defined in the same file and project are preferred, and lots of other reasonable logic. The types you are likely to choose appear higher in the list, a real modern technological marvel.
 
-The Open Type dialog also has similar improvements, with slightly different rules that make sense there.
+The Open Type dialog also gets similar improvements, with slightly different rules that make sense there.
 
 ## Tabs
 
 Better tabs:
 
-* Removes the `.java` suffix so tabs are shorter.
-* Removes the close button so tabs are shorter.
-* Increases the number of characters for a tab to be truncated with a ellipsis to 100 so tabs are longer, but you can actually tell them apart.
+* Removes the `.java` suffix so tabs are narrower.
+* Removes the close button so tabs are narrower.
+* Increases the number of characters for a tab to be truncated with a ellipsis to 100 so tabs are wider, but you can actually tell them apart.
 
 Before:
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/before.png?raw=true)
