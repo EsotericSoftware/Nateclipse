@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
+import { isKeyRelease, isKeyRepeat, matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
 
 const PROBE_WIDGET_KEY = "auto-turn-filter-probe";
 const RUNTIME_KEY = "__piAutoTurnFilterRuntime";
@@ -324,6 +324,34 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// Registered once per extension load so repeated session_starts
+	// don't stack duplicate handlers.
+	let unsubscribeInput: (() => void) | undefined;
+
+	pi.on("message_end", async (event, eventCtx) => {
+		if (!isCurrentRuntime() || eventCtx.mode !== "tui") return;
+		const message = (event as any).message;
+		if (message?.role !== "assistant") return;
+		if (!message.content?.some((c: any) => c?.type === "text" && String(c.text ?? "").trim())) return;
+		patchTopLevelContainers();
+		requestRender();
+	});
+
+	pi.on("agent_end", async (_event, eventCtx) => {
+		if (!isCurrentRuntime() || eventCtx.mode !== "tui") return;
+		patchTopLevelContainers();
+		requestRender();
+	});
+
+	pi.on("session_shutdown", async () => {
+		if ((globalThis as any)[RUNTIME_KEY] === runtimeId) {
+			(globalThis as any)[RUNTIME_KEY] = undefined;
+		}
+		runtimeActive = false;
+		unsubscribeInput?.();
+		unsubscribeInput = undefined;
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
@@ -350,10 +378,17 @@ export default function (pi: ExtensionAPI) {
 			}, delay);
 		}
 
-		const unsubscribe = ctx.ui.onTerminalInput((data) => {
+		// A second session_start replaces the listener instead of stacking a duplicate.
+		unsubscribeInput?.();
+		unsubscribeInput = ctx.ui.onTerminalInput((data) => {
 			if (!isCurrentRuntime()) return undefined;
 
 			if (matchesKey(data, "ctrl+f")) {
+				// The kitty keyboard protocol reports repeat/release as separate events
+				// and input listeners see them before the TUI's release filter. Acting on
+				// both press and release toggled twice per keystroke (a net no-op).
+				// Swallow non-press events for the key we own, but only toggle on press.
+				if (isKeyRelease(data) || isKeyRepeat(data)) return { consume: true };
 				foldingEnabled = !foldingEnabled;
 				if (!foldingEnabled) applyToolExpansion(ctx.ui.getToolsExpanded());
 				ctx.ui.notify(`Turn folding ${foldingEnabled ? "enabled" : "disabled"}`, "info");
@@ -370,29 +405,6 @@ export default function (pi: ExtensionAPI) {
 				setTimeout(requestRender, 0);
 			}
 			return undefined;
-		});
-
-		pi.on("message_end", async (event, eventCtx) => {
-			if (!isCurrentRuntime() || eventCtx.mode !== "tui") return;
-			const message = (event as any).message;
-			if (message?.role !== "assistant") return;
-			if (!message.content?.some((c: any) => c?.type === "text" && String(c.text ?? "").trim())) return;
-			patchTopLevelContainers();
-			requestRender();
-		});
-
-		pi.on("agent_end", async (_event, eventCtx) => {
-			if (!isCurrentRuntime() || eventCtx.mode !== "tui") return;
-			patchTopLevelContainers();
-			requestRender();
-		});
-
-		pi.on("session_shutdown", async () => {
-			if ((globalThis as any)[RUNTIME_KEY] === runtimeId) {
-				(globalThis as any)[RUNTIME_KEY] = undefined;
-			}
-			runtimeActive = false;
-			unsubscribe();
 		});
 	});
 }
