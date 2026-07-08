@@ -2,11 +2,11 @@
 
 This project improves your Java coding experience when using Eclipse and the fantastic [Pi coding harness](https://pi.dev).
 
-Isn't Eclipse ancient? Yes, but it has an amazing compiler. It does real incremental compilation so the bytecode is ready as soon as a file is changed. Even files with errors can be compiled, as much as possible. It really is goddamned excellent.
+Isn't Eclipse ancient? Yes, but it has an amazing compiler. It does real incremental compilation so the bytecode is ready as soon as a file is changed. Even files with errors can be compiled, as much as possible. It really is goddamned excellent and Nateclipse lets it pair perfectly with Pi.
 
 Pi gives you a prompt to talk to any LLM and gives the LLM tools to do work. With Pi it's as good as it gets: just you, your prompts, and the model. Unlike Claude Code or Codex, there's no long system prompt filled with garbage or janky extra features.
 
-Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering around with grep. Giving IDE tools to the coding agent is obviously great and the rest of the provided Pi extensions further improve the experience.
+Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering around with `grep`. Giving IDE tools to the coding agent is obviously great and the rest of the provided Pi extensions further improve the experience.
 
 ## Installation
 
@@ -22,9 +22,9 @@ The `java_*` Pi tools require Eclipse to be running with the Nateclipse plugin l
 
 ## JDT API
 
-An Eclipse plugin exposes JDT functionality over HTTP so coding agents (or other tools) can use it.
+The Nateclipse Eclipse plugin exposes JDT functionality over HTTP so coding agents (or other tools) can use it. It also unfucks tabs and completion sorting, see [below](#completion-sorting).
 
-Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, check compilation succeeds, and more, without wasting tokens on `grep`. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
+Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, check compilation succeeds, and more. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
 
 ## Pi extensions
 
