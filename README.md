@@ -22,15 +22,15 @@ The `java_*` Pi tools require Eclipse to be running with the Nateclipse plugin l
 
 ## JDT API
 
-The Nateclipse Eclipse plugin exposes JDT functionality over HTTP so coding agents (or other tools) can use it. It also unfucks tabs and completion sorting, see [below](#completion-sorting).
+The Nateclipse Eclipse plugin exposes JDT functionality over HTTP so Pi (or other tools) can use it. It also unfucks tabs and completion sorting, see [below](#completion-sorting).
 
-Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your coding agent efficiently explore the codebase, organize imports, check compilation succeeds, and more. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
+Eclipse already has all your Java projects, builds incrementally in the background, and keeps an extensive symbol database. This plugin lets your LLM efficiently explore the codebase, organize imports, check compilation succeeds, and more. It also provides entire the classpath of an Eclipse project, with all dependencies, allowing the agent to run code in your projects.
 
 ## Pi extensions
 
 ### nateclipse.ts
 
-This extension gives coding agents access to the JDT API. Semantic understanding of Java source makes code spelunking efficient. Tools reference types by name or wildcard rather than file path, so agents don't waste tokens guessing at source locations across many projects.
+This extension gives the LLM access to the JDT API. Semantic understanding of Java source makes code spelunking efficient. Tools reference types by name or wildcard rather than file path, so agents don't waste tokens guessing at source locations across many projects.
 
 Tools provided:
 
@@ -73,7 +73,7 @@ This extension provides a grep tool. It gives nicer output than making the agent
 
 ### image-pruner.ts
 
-This extension prunes old image blocks from the LLM request context. If the agent is reading 5+ images, this prevents your context from filling up too quickly.
+This extension prunes old image blocks from the LLM request context. If the agent reads 5+ images, this prevents your context from filling up too quickly.
 
 ### retry.ts
 
