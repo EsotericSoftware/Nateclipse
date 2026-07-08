@@ -18,5 +18,4 @@ Don't bother with TSC.
 - When working on pi first read the docs and examples and follow .md cross-references before implementing
 - Always read pi .md files completely and follow links to related docs (eg, tui.md for TUI API details)
 - Full Pi source: C:\Dev\oss\pi-mono (git pull to ensure latest)
-- Core tools: C:\Dev\oss\pi-mono\packages\coding-agent\src\core\tools (git pull to ensure latest)
-- Installed extensions: C:\Users\Nate\.pi\agent\extensions (pi-extensions/*.ts are symlinked here)
+- Core tools: C:\Dev\oss\pi-mono\packages\coding-agent\src\core\tools (git pull to ensure latest, yes that changes working directory, it's fine)
