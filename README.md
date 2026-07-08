@@ -6,7 +6,7 @@ Isn't Eclipse ancient? Yes, but it has an amazing compiler. It does real increme
 
 Pi gives you a prompt to talk to any LLM and gives the LLM tools to do work. With Pi it's as good as it gets: just you, your prompts, and the model. Unlike Claude Code or Codex, there's no long system prompt filled with garbage or janky extra features.
 
-Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering around with grep. Giving the coding agent IDE tools is obviously great and the rest of the provided Pi extensions further improve the experience.
+Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering around with grep. Giving IDE tools to the coding agent is obviously great and the rest of the provided Pi extensions further improve the experience.
 
 ## Installation
 
