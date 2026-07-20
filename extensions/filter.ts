@@ -47,7 +47,7 @@ class HeaderComponent implements Component {
 			this.toolCallCount > 0
 				? `${this.toolCallCount} tool call${this.toolCallCount === 1 ? "" : "s"}`
 				: "thoughts";
-		const parts = [...this.toolNames].map(([name, count]) => (name === "edit" && count > 1 ? `${name} ${count}x` : name));
+		const parts = [...this.toolNames].map(([name, count]) => (name === "edit" ? `${name} ${count}x` : name));
 		const names = parts.length > 0 ? `: ${parts.join(", ")}` : "";
 		const text = `▸ ${label}${names}`;
 		return ["", this.theme?.fg ? this.theme.fg("muted", text) : text];
