@@ -38,6 +38,7 @@ class EmptyComponent implements Component {
 class HeaderComponent implements Component {
 	constructor(
 		private readonly toolCallCount: number,
+		private readonly toolNames: string[],
 		private readonly theme: any,
 	) {}
 
@@ -46,7 +47,8 @@ class HeaderComponent implements Component {
 			this.toolCallCount > 0
 				? `${this.toolCallCount} tool call${this.toolCallCount === 1 ? "" : "s"}`
 				: "thoughts";
-		const text = `▸ ${label}`;
+		const names = this.toolNames.length > 0 ? `: ${this.toolNames.join(", ")}` : "";
+		const text = `▸ ${label}${names}`;
 		return ["", this.theme?.fg ? this.theme.fg("muted", text) : text];
 	}
 }
@@ -220,12 +222,14 @@ function renderFolded(children: AnyComponent[], width: number, theme: any): stri
 	let pending: AnyComponent[] = [];
 	let neutralAfterPending: AnyComponent[] = [];
 	let pendingToolCount = 0;
+	let pendingToolNames = new Set<string>();
 
 	function flushFold() {
 		if (pending.length === 0) return;
-		output.push(new HeaderComponent(pendingToolCount, theme) as AnyComponent);
+		output.push(new HeaderComponent(pendingToolCount, [...pendingToolNames], theme) as AnyComponent);
 		pending = [];
 		pendingToolCount = 0;
+		pendingToolNames = new Set();
 	}
 
 	function flushRaw() {
@@ -233,13 +237,17 @@ function renderFolded(children: AnyComponent[], width: number, theme: any): stri
 		output.push(...pending, ...neutralAfterPending);
 		pending = [];
 		pendingToolCount = 0;
+		pendingToolNames = new Set();
 		neutralAfterPending = [];
 	}
 
 	for (const child of normalized) {
 		if (isFoldable(child)) {
 			pending.push(...neutralAfterPending, child);
-			if (isToolExecution(child)) pendingToolCount++;
+			if (isToolExecution(child)) {
+				pendingToolCount++;
+				if (typeof child.toolName === "string") pendingToolNames.add(child.toolName);
+			}
 			neutralAfterPending = [];
 			continue;
 		}
