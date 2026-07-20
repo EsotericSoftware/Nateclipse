@@ -94,8 +94,16 @@ public class WebJDT extends WebServer {
 		Job.getJobManager().join(ResourcesPlugin.FAMILY_AUTO_BUILD, new NullProgressMonitor());
 
 		var markers = target.findMarkers(IMarker.PROBLEM, true, IResource.DEPTH_INFINITE);
+		// Deterministic order, replicable in the Problems view: resource filename, then severity (errors first), then
+		// description. Full path keeps same-named files contiguous, line is a final tiebreaker for identical messages.
 		Arrays.sort(markers, (a, b) -> {
-			int c = a.getResource().getFullPath().toString().compareTo(b.getResource().getFullPath().toString());
+			int c = a.getResource().getName().compareTo(b.getResource().getName());
+			if (c != 0) return c;
+			c = a.getResource().getFullPath().toString().compareTo(b.getResource().getFullPath().toString());
+			if (c != 0) return c;
+			c = b.getAttribute(IMarker.SEVERITY, -1) - a.getAttribute(IMarker.SEVERITY, -1);
+			if (c != 0) return c;
+			c = a.getAttribute(IMarker.MESSAGE, "").compareTo(b.getAttribute(IMarker.MESSAGE, ""));
 			if (c != 0) return c;
 			return Integer.compare(a.getAttribute(IMarker.LINE_NUMBER, 0), b.getAttribute(IMarker.LINE_NUMBER, 0));
 		});

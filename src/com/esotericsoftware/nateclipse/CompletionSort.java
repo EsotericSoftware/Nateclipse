@@ -60,6 +60,8 @@ import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
  * matching (eg {@code drawSkeletonOutline} for {@code sout}) never outranks an exact match.
  * <li>Proposals whose name matches the typed prefix ignoring case (eg {@code String} for {@code string}) — never treated as
  * exact, but still above all fuzzy matches. Ties within either group fall through to the tiers below.
+ * <li>When completing a member access ({@code object.a}), accessors for the typed property: getters ({@code getA()},
+ * {@code isA()}) first, then the setter ({@code setA()}).
  * <li>Method-stub generators (override method, getter/setter, record accessor, method declaration).
  * <li>Local variables declared <em>above</em> the cursor in the enclosing executable scope, ordered nearest-first.
  * <li>Parameters of the enclosing method/lambda/etc, in declaration order.
@@ -134,6 +136,9 @@ public class CompletionSort extends AbstractProposalSorter {
 	/** Java identifier prefix immediately before the content-assist offset. Used to promote only high-confidence template
 	 * matches. */
 	private String activePrefix = "";
+	/** True when the completion is a member access, ie the char before {@link #activePrefix} is a dot ({@code object.a}). Gates
+	 * accessor promotion in {@link #exactMatchRank}. */
+	private boolean memberAccess;
 
 	/** Cache key for {@link #ensureContext}. Refresh only happens when this triple changes (typically once per session). The
 	 * version is observed from {@link #CACHE_VERSION} so a model change forces a refresh even at the same {@code (cu, offset)}. */
@@ -196,7 +201,7 @@ public class CompletionSort extends AbstractProposalSorter {
 	/** Proposal identity -> fuzzy match score against {@link #activePrefix}. Reset on each context refresh. */
 	private final Map<ICompletionProposal, Integer> templateMatchCache = new HashMap<>();
 	/** Proposal identity -> exact-match rank against {@link #activePrefix}: 0 = case-sensitive match, 1 = case-insensitive match,
-	 * 2 = no match. Reset on each context refresh. */
+	 * 2 = getter for the typed property, 3 = setter, 4 = no match. Reset on each context refresh. */
 	private final Map<ICompletionProposal, Integer> exactMatchCache = new HashMap<>();
 
 	@Override
@@ -258,11 +263,13 @@ public class CompletionSort extends AbstractProposalSorter {
 		importedTypes = Collections.emptySet();
 		importedPackages = Collections.emptySet();
 		activePrefix = "";
+		memberAccess = false;
 		debugProposalsLogged = 0;
 		IType debugEnclosingType = null;
 		boolean debugMembersFromCache = false;
 		try {
 			activePrefix = completionPrefix(cu, offset);
+			memberAccess = isMemberAccess(cu, offset);
 			IJavaProject project = cu.getJavaProject();
 			if (project != null) activeProject = project.getElementName();
 			IPackageDeclaration[] pkgs = cu.getPackageDeclarations();
@@ -304,7 +311,7 @@ public class CompletionSort extends AbstractProposalSorter {
 		if (DEBUG) {
 			long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
 			log.info("CompletionSort.refreshFor: cu=" + cu.getElementName() + ", offset=" + offset //
-				+ ", prefix=" + activePrefix //
+				+ ", prefix=" + activePrefix + (memberAccess ? " (member access)" : "") //
 				+ ", elapsedMs=" + elapsedMs //
 				+ ", membersCached=" + debugMembersFromCache //
 				+ ", project=" + activeProject + ", package=" + activePackage //
@@ -478,7 +485,8 @@ public class CompletionSort extends AbstractProposalSorter {
 		ensureContext();
 		// Exact name matches always come first, regardless of proposal kind: JDT's subword/camelCase matching can propose
 		// eg drawSkeletonOutline for "sout", which must never outrank a proposal actually named "sout". Case-sensitive
-		// matches beat case-insensitive ones. Ties within a rank fall through to the tier order below.
+		// matches beat case-insensitive ones. For member accesses, accessors of the typed property come next (getA/isA
+		// before setA). Ties within a rank fall through to the tier order below.
 		int e1 = exactMatchRank(p1);
 		int e2 = exactMatchRank(p2);
 		if (e1 != e2) return e1 - e2;
@@ -549,20 +557,35 @@ public class CompletionSort extends AbstractProposalSorter {
 	}
 
 	/** Ranks how exactly the proposal's name matches the typed prefix: 0 = case-sensitive match, 1 = case-insensitive match, 2 =
+	 * getter for the typed property ({@code getA}/{@code isA} for prefix {@code a}, member access only), 3 = matching setter, 4 =
 	 * no match. Templates are matched by their template name rather than the display string. */
 	private int exactMatchRank (ICompletionProposal p) {
 		Integer cached = exactMatchCache.get(p);
 		if (cached != null) return cached.intValue();
-		int rank = 2;
+		int rank = 4;
 		if (!activePrefix.isEmpty()) {
 			String name = isTemplate(p) ? templateName(p) : nameOf(p);
 			if (activePrefix.equals(name))
 				rank = 0;
-			else if (activePrefix.equalsIgnoreCase(name)) //
+			else if (activePrefix.equalsIgnoreCase(name))
 				rank = 1;
+			else if (memberAccess) {
+				if (isAccessor(name, "get") || isAccessor(name, "is"))
+					rank = 2;
+				else if (isAccessor(name, "set")) //
+					rank = 3;
+			}
 		}
 		exactMatchCache.put(p, Integer.valueOf(rank));
 		return rank;
+	}
+
+	/** True if {@code name} is exactly {@code kind} + {@link #activePrefix} with the property part compared ignoring case, eg
+	 * {@code getA} for typed prefix {@code a}. */
+	private boolean isAccessor (String name, String kind) {
+		int kn = kind.length();
+		return name.length() == kn + activePrefix.length() && name.startsWith(kind)
+			&& name.regionMatches(true, kn, activePrefix, 0, activePrefix.length());
 	}
 
 	private boolean isStrongTemplateMatch (ICompletionProposal p) {
@@ -636,6 +659,25 @@ public class CompletionSort extends AbstractProposalSorter {
 			return start == offset ? "" : buffer.getText(start, offset - start);
 		} catch (Exception ex) {
 			return "";
+		}
+	}
+
+	/** True if the identifier at {@code offset} is preceded (ignoring whitespace) by a dot, ie the completion is a member
+	 * access. */
+	static private boolean isMemberAccess (ICompilationUnit cu, int offset) {
+		try {
+			org.eclipse.jdt.core.IBuffer buffer = cu.getBuffer();
+			if (buffer == null) return false;
+			int len = buffer.getLength();
+			if (offset > len) offset = len;
+			int start = offset;
+			while (start > 0 && Character.isJavaIdentifierPart(buffer.getChar(start - 1)))
+				start--;
+			while (start > 0 && Character.isWhitespace(buffer.getChar(start - 1)))
+				start--;
+			return start > 0 && buffer.getChar(start - 1) == '.';
+		} catch (Exception ex) {
+			return false;
 		}
 	}
 
