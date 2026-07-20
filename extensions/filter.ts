@@ -38,7 +38,7 @@ class EmptyComponent implements Component {
 class HeaderComponent implements Component {
 	constructor(
 		private readonly toolCallCount: number,
-		private readonly toolNames: string[],
+		private readonly toolNames: Map<string, number>,
 		private readonly theme: any,
 	) {}
 
@@ -47,7 +47,8 @@ class HeaderComponent implements Component {
 			this.toolCallCount > 0
 				? `${this.toolCallCount} tool call${this.toolCallCount === 1 ? "" : "s"}`
 				: "thoughts";
-		const names = this.toolNames.length > 0 ? `: ${this.toolNames.join(", ")}` : "";
+		const parts = [...this.toolNames].map(([name, count]) => (name === "edit" && count > 1 ? `${name} ${count}x` : name));
+		const names = parts.length > 0 ? `: ${parts.join(", ")}` : "";
 		const text = `▸ ${label}${names}`;
 		return ["", this.theme?.fg ? this.theme.fg("muted", text) : text];
 	}
@@ -222,14 +223,14 @@ function renderFolded(children: AnyComponent[], width: number, theme: any): stri
 	let pending: AnyComponent[] = [];
 	let neutralAfterPending: AnyComponent[] = [];
 	let pendingToolCount = 0;
-	let pendingToolNames = new Set<string>();
+	let pendingToolNames = new Map<string, number>();
 
 	function flushFold() {
 		if (pending.length === 0) return;
-		output.push(new HeaderComponent(pendingToolCount, [...pendingToolNames], theme) as AnyComponent);
+		output.push(new HeaderComponent(pendingToolCount, pendingToolNames, theme) as AnyComponent);
 		pending = [];
 		pendingToolCount = 0;
-		pendingToolNames = new Set();
+		pendingToolNames = new Map();
 	}
 
 	function flushRaw() {
@@ -237,7 +238,7 @@ function renderFolded(children: AnyComponent[], width: number, theme: any): stri
 		output.push(...pending, ...neutralAfterPending);
 		pending = [];
 		pendingToolCount = 0;
-		pendingToolNames = new Set();
+		pendingToolNames = new Map();
 		neutralAfterPending = [];
 	}
 
@@ -246,7 +247,9 @@ function renderFolded(children: AnyComponent[], width: number, theme: any): stri
 			pending.push(...neutralAfterPending, child);
 			if (isToolExecution(child)) {
 				pendingToolCount++;
-				if (typeof child.toolName === "string") pendingToolNames.add(child.toolName);
+				if (typeof child.toolName === "string") {
+					pendingToolNames.set(child.toolName, (pendingToolNames.get(child.toolName) ?? 0) + 1);
+				}
 			}
 			neutralAfterPending = [];
 			continue;
