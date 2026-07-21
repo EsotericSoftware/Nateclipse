@@ -47,12 +47,12 @@ class HeaderComponent implements Component {
 			this.toolCallCount > 0
 				? `${this.toolCallCount} tool call${this.toolCallCount === 1 ? "" : "s"}`
 				: "thoughts";
+		const fg = (color: string, text: string) => (this.theme?.fg ? this.theme.fg(color, text) : text);
 		const parts = [...this.toolNames]
 			.sort(([a], [b]) => (a === "edit" ? -1 : b === "edit" ? 1 : a.localeCompare(b)))
-			.map(([name, count]) => (name === "edit" ? `${name} ${count}x` : name));
-		const names = parts.length > 0 ? `: ${parts.join(", ")}` : "";
-		const text = `▸ ${label}${names}`;
-		return ["", this.theme?.fg ? this.theme.fg("muted", text) : text];
+			.map(([name, count]) => (name === "edit" ? fg("warning", `${name} ${count}x`) : fg("muted", name)));
+		const names = parts.length > 0 ? fg("muted", ": ") + parts.join(fg("muted", ", ")) : "";
+		return ["", fg("muted", `▸ ${label}`) + names];
 	}
 }
 
