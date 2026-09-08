@@ -6,6 +6,11 @@ const RUNTIME_KEY = "__piAutoTurnFilterRuntime";
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 const ERROR_OR_WARNING_RE = /^(Error|Warning):\s/;
 
+// fold: tool runs between prose collapse, live work shows raw.
+// fold all: live work collapses too.
+type FilterMode = "fold" | "fold all" | "off";
+const FILTER_MODES: readonly FilterMode[] = ["fold", "fold all", "off"];
+
 type AnyComponent = Component & Record<string, any>;
 type ContainerLike = AnyComponent & { children: AnyComponent[] };
 
@@ -20,13 +25,14 @@ type PieceCacheEntry = {
 	markdownTheme: any;
 	hiddenThinkingLabel: string;
 	outputPad: number;
+	markdownTransformers: any;
+	isStreaming: boolean;
 	pieces: AnyComponent[];
 };
 
 // Memoized splitAssistant pieces per source component. Reusing clone instances
 // across frames keeps their internal Markdown/Text line caches warm, which is
-// the expensive part. Live components (tool executions, streaming prose) are
-// always rendered directly so they never go stale.
+// the expensive part. Streaming rows change signature every frame and rebuild.
 const pieceCache = new WeakMap<AnyComponent, PieceCacheEntry>();
 
 class EmptyComponent implements Component {
@@ -38,6 +44,7 @@ class EmptyComponent implements Component {
 class HeaderComponent implements Component {
 	constructor(
 		private readonly toolCallCount: number,
+		private readonly failedCount: number,
 		private readonly toolNames: Map<string, number>,
 		private readonly theme: any,
 	) {}
@@ -52,7 +59,8 @@ class HeaderComponent implements Component {
 			.sort(([a], [b]) => (a === "edit" ? -1 : b === "edit" ? 1 : a.localeCompare(b)))
 			.map(([name, count]) => (name === "edit" ? fg("warning", `${name} ${count}x`) : fg("muted", name)));
 		const names = parts.length > 0 ? fg("muted", ": ") + parts.join(fg("muted", ", ")) : "";
-		return ["", fg("muted", `▸ ${label}`) + names];
+		const failed = this.failedCount > 0 ? fg("muted", " · ") + fg("error", `${this.failedCount} failed`) : "";
+		return ["", fg("muted", `▸ ${label}`) + names + failed];
 	}
 }
 
@@ -128,18 +136,26 @@ function cloneAssistantPiece(
 
 	try {
 		const Ctor = original.constructor as new (...args: any[]) => AnyComponent;
-		return new Ctor(
-			{
-				...message,
-				content,
-				stopReason: kind === "thinking" || kind === "toolCall" ? undefined : message.stopReason,
-				errorMessage: kind === "thinking" || kind === "toolCall" ? undefined : message.errorMessage,
-			},
+		const piece = new Ctor(
+			undefined,
 			original.hideThinkingBlock ?? false,
 			original.markdownTheme,
 			original.hiddenThinkingLabel,
 			original.outputPad ?? 1,
+			original.markdownTransformers ?? [],
 		);
+		// Constructor can't take the streaming flag; markdown transformers see it via updateContent.
+		piece.updateContent(
+			{
+				...message,
+				content,
+				// Only the status piece renders error/abort/truncation lines, so they are not duplicated under prose.
+				stopReason: kind === "status" ? message.stopReason : undefined,
+				errorMessage: kind === "status" ? message.errorMessage : undefined,
+			},
+			original.isStreaming ?? false,
+		);
+		return piece;
 	} catch {
 		return undefined;
 	}
@@ -169,7 +185,9 @@ function splitAssistant(component: AnyComponent): AnyComponent[] {
 		cached.hideThinkingBlock === (component.hideThinkingBlock ?? false) &&
 		cached.markdownTheme === component.markdownTheme &&
 		cached.hiddenThinkingLabel === component.hiddenThinkingLabel &&
-		cached.outputPad === (component.outputPad ?? 1)
+		cached.outputPad === (component.outputPad ?? 1) &&
+		cached.markdownTransformers === component.markdownTransformers &&
+		cached.isStreaming === (component.isStreaming ?? false)
 	) {
 		return cached.pieces;
 	}
@@ -182,6 +200,8 @@ function splitAssistant(component: AnyComponent): AnyComponent[] {
 		markdownTheme: component.markdownTheme,
 		hiddenThinkingLabel: component.hiddenThinkingLabel,
 		outputPad: component.outputPad ?? 1,
+		markdownTransformers: component.markdownTransformers,
+		isStreaming: component.isStreaming ?? false,
 		pieces,
 	});
 	return pieces;
@@ -219,46 +239,46 @@ function renderComponents(components: AnyComponent[], width: number): string[] {
 	return lines;
 }
 
-function renderFolded(children: AnyComponent[], width: number, theme: any): string[] {
+function foldSummary(items: AnyComponent[], theme: any): AnyComponent | undefined {
+	let toolCount = 0;
+	let failedCount = 0;
+	let hasThinking = false;
+	const toolNames = new Map<string, number>();
+	for (const item of items) {
+		if (isToolExecution(item)) {
+			toolCount++;
+			if (item.result?.isError) failedCount++;
+			if (typeof item.toolName === "string") toolNames.set(item.toolName, (toolNames.get(item.toolName) ?? 0) + 1);
+		} else if (assistantHasThinking(item)) {
+			hasThinking = true;
+		}
+	}
+	// Tool-call markers alone have nothing to summarize.
+	if (toolCount === 0 && !hasThinking) return undefined;
+	return new HeaderComponent(toolCount, failedCount, toolNames, theme) as AnyComponent;
+}
+
+function renderFolded(children: AnyComponent[], width: number, theme: any, foldTail: boolean): string[] {
 	const normalized = children.flatMap(splitAssistant);
 	const output: AnyComponent[] = [];
 	let pending: AnyComponent[] = [];
 	let neutralAfterPending: AnyComponent[] = [];
-	let pendingToolCount = 0;
-	let pendingToolNames = new Map<string, number>();
 
-	function flushFold() {
-		if (pending.length === 0) return;
-		output.push(new HeaderComponent(pendingToolCount, pendingToolNames, theme) as AnyComponent);
-		pending = [];
-		pendingToolCount = 0;
-		pendingToolNames = new Map();
-	}
-
-	function flushRaw() {
-		if (pending.length === 0 && neutralAfterPending.length === 0) return;
-		output.push(...pending, ...neutralAfterPending);
-		pending = [];
-		pendingToolCount = 0;
-		pendingToolNames = new Map();
-		neutralAfterPending = [];
+	function pushFold(items: AnyComponent[]) {
+		const header = foldSummary(items, theme);
+		if (header) output.push(header);
 	}
 
 	for (const child of normalized) {
 		if (isFoldable(child)) {
 			pending.push(...neutralAfterPending, child);
-			if (isToolExecution(child)) {
-				pendingToolCount++;
-				if (typeof child.toolName === "string") {
-					pendingToolNames.set(child.toolName, (pendingToolNames.get(child.toolName) ?? 0) + 1);
-				}
-			}
 			neutralAfterPending = [];
 			continue;
 		}
 
 		if (isUserBoundary(child) || isAssistantBoundary(child)) {
-			flushFold();
+			pushFold(pending);
+			pending = [];
 			output.push(...neutralAfterPending, child);
 			neutralAfterPending = [];
 			continue;
@@ -272,9 +292,25 @@ function renderFolded(children: AnyComponent[], width: number, theme: any): stri
 	}
 
 	// No following user/assistant prose yet: this is live/current intermediate work.
-	flushRaw();
+	if (foldTail) {
+		pushFold(pending);
+		output.push(...neutralAfterPending);
+	} else {
+		output.push(...pending, ...neutralAfterPending);
+	}
 
 	return renderComponents(output, width);
+}
+
+// Pi nests the transcript: tui → documentContainer → chatContainer. Walk plain
+// Containers only; message components subclass Container but never host the transcript.
+function collectContainers(roots: AnyComponent[], out: ContainerLike[] = []): ContainerLike[] {
+	for (const root of roots) {
+		if (root?.constructor?.name !== "Container" || !Array.isArray(root.children)) continue;
+		out.push(root as ContainerLike);
+		collectContainers(root.children, out);
+	}
+	return out;
 }
 
 function setExpandedDeep(component: AnyComponent, expanded: boolean): void {
@@ -290,7 +326,7 @@ export default function (pi: ExtensionAPI) {
 
 	let tui: (TUI & { children?: AnyComponent[]; requestRender?: () => void }) | undefined;
 	let theme: any;
-	let foldingEnabled = true;
+	let mode: FilterMode = "fold";
 	let runtimeActive = false;
 	let renderQueued = false;
 
@@ -308,8 +344,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	function patchContainer(container: AnyComponent | undefined) {
-		if (!container || !Array.isArray(container.children)) return;
+	function patchContainer(container: ContainerLike) {
 		const target = container as PatchedContainer;
 
 		// /reload keeps the same TUI/container instances. If a previous runtime
@@ -318,21 +353,21 @@ export default function (pi: ExtensionAPI) {
 		const original = target.__piFilterOriginalRender ?? target.render.bind(target);
 		target.__piFilterOriginalRender = original;
 		target.render = (width: number) => {
-			if (!isCurrentRuntime() || !foldingEnabled || !isChatLike(target)) {
+			if (!isCurrentRuntime() || mode === "off" || !isChatLike(target)) {
 				return original(width);
 			}
-			return renderFolded(target.children, width, theme);
+			return renderFolded(target.children, width, theme, mode === "fold all");
 		};
 	}
 
 	function patchTopLevelContainers() {
-		for (const child of tui?.children ?? []) patchContainer(child);
+		for (const container of collectContainers(tui?.children ?? [])) patchContainer(container);
 	}
 
 	function applyToolExpansion(expanded: boolean) {
-		for (const top of tui?.children ?? []) {
-			if (Array.isArray(top.children) && isChatLike(top as ContainerLike)) {
-				for (const child of top.children) setExpandedDeep(child, expanded);
+		for (const container of collectContainers(tui?.children ?? [])) {
+			if (isChatLike(container)) {
+				for (const child of container.children) setExpandedDeep(child, expanded);
 			}
 		}
 	}
@@ -369,7 +404,7 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode !== "tui") return;
 
 		runtimeActive = true;
-		foldingEnabled = true;
+		mode = "fold";
 
 		ctx.ui.setWidget(PROBE_WIDGET_KEY, (capturedTui, capturedTheme) => {
 			tui = capturedTui as typeof tui;
@@ -402,9 +437,9 @@ export default function (pi: ExtensionAPI) {
 				// both press and release toggled twice per keystroke (a net no-op).
 				// Swallow non-press events for the key we own, but only toggle on press.
 				if (isKeyRelease(data) || isKeyRepeat(data)) return { consume: true };
-				foldingEnabled = !foldingEnabled;
-				if (!foldingEnabled) applyToolExpansion(ctx.ui.getToolsExpanded());
-				ctx.ui.notify(`Turn folding ${foldingEnabled ? "enabled" : "disabled"}`, "info");
+				mode = FILTER_MODES[(FILTER_MODES.indexOf(mode) + 1) % FILTER_MODES.length]!;
+				if (mode === "off") applyToolExpansion(ctx.ui.getToolsExpanded());
+				ctx.ui.notify(`Filter: ${mode}`, "info");
 				requestRender();
 				return { consume: true };
 			}
