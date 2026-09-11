@@ -95,14 +95,16 @@ function stripAnsi(text: string): string {
 	return text.replace(ANSI_SGR_RE, "");
 }
 
-function isErrorTextBoundary(component: AnyComponent): boolean {
-	if (component?.constructor?.name !== "Text") return false;
+function diagnosticKind(component: AnyComponent): "fetch failed" | "other" | undefined {
+	if (assistantHasVisibleStatus(component)) {
+		const message = assistantMessage(component);
+		return message.stopReason === "error" && String(message.errorMessage ?? "").trim().toLowerCase() === "fetch failed"
+			? "fetch failed" : "other";
+	}
+	if (component?.constructor?.name !== "Text") return undefined;
 	const text = typeof component.text === "string" ? stripAnsi(component.text).trim() : "";
-	return ERROR_OR_WARNING_RE.test(text);
-}
-
-function isAssistantBoundary(component: AnyComponent): boolean {
-	return assistantHasText(component) || assistantHasVisibleStatus(component) || isErrorTextBoundary(component);
+	if (!ERROR_OR_WARNING_RE.test(text)) return undefined;
+	return /^Error:\s+fetch failed$/i.test(text) ? "fetch failed" : "other";
 }
 
 function isUserBoundary(component: AnyComponent): boolean {
@@ -122,7 +124,8 @@ function isFoldable(component: AnyComponent): boolean {
 
 function isChatLike(container: ContainerLike): boolean {
 	return container.children.some(
-		(child) => isUserBoundary(child) || isAssistantBoundary(child) || isToolExecution(child) || assistantHasThinking(child),
+		(child) => isUserBoundary(child) || assistantHasText(child) || isToolExecution(child)
+			|| assistantHasThinking(child) || diagnosticKind(child) !== undefined,
 	);
 }
 
@@ -130,6 +133,7 @@ function cloneAssistantPiece(
 	original: AnyComponent,
 	content: any[],
 	kind: "thinking" | "text" | "status" | "toolCall",
+	hiddenThinkingLabel = original.hiddenThinkingLabel,
 ): AnyComponent | undefined {
 	const message = assistantMessage(original);
 	if (!message) return undefined;
@@ -140,7 +144,7 @@ function cloneAssistantPiece(
 			undefined,
 			original.hideThinkingBlock ?? false,
 			original.markdownTheme,
-			original.hiddenThinkingLabel,
+			hiddenThinkingLabel,
 			original.outputPad ?? 1,
 			original.markdownTransformers ?? [],
 		);
@@ -231,11 +235,52 @@ function buildAssistantPieces(component: AnyComponent, message: any): AnyCompone
 	return pieces.length > 0 ? pieces : [component];
 }
 
+function isHiddenThinking(component: AnyComponent): boolean {
+	return !!component.hideThinkingBlock && assistantHasThinking(component)
+		&& assistantMessage(component).content.every((c: any) => c?.type === "thinking")
+		&& !assistantHasVisibleStatus(component);
+}
+
 function renderComponents(components: AnyComponent[], width: number): string[] {
 	const lines: string[] = [];
-	for (const component of components) {
-		lines.push(...component.render(width));
+	let thinking: AnyComponent[] = [];
+	let spacing: string[] = [];
+
+	function flushThinking() {
+		const first = thinking[0];
+		if (first) {
+			const content = thinking.flatMap((item) => assistantMessage(item).content)
+				.filter((c: any) => String(c.thinking ?? "").trim());
+			const summary = content.length > 1
+				? cloneAssistantPiece(first, content, "thinking", `${first.hiddenThinkingLabel ?? "Thinking..."} ${content.length}x`)
+				: undefined;
+			for (const item of summary ? [summary] : thinking) lines.push(...item.render(width));
+		}
+		lines.push(...spacing);
+		thinking = [];
+		spacing = [];
 	}
+
+	for (const component of components) {
+		if (isHiddenThinking(component)) {
+			const first = thinking[0];
+			if (first && (first.hiddenThinkingLabel !== component.hiddenThinkingLabel || first.outputPad !== component.outputPad)) {
+				flushThinking();
+			}
+			thinking.push(component);
+			spacing = [];
+			continue;
+		}
+
+		const rendered = component.render(width);
+		if (thinking.length > 0 && rendered.every((line) => !stripAnsi(line).trim())) {
+			spacing.push(...rendered);
+			continue;
+		}
+		flushThinking();
+		lines.push(...rendered);
+	}
+	flushThinking();
 	return lines;
 }
 
@@ -264,20 +309,29 @@ function renderFolded(children: AnyComponent[], width: number, theme: any, foldT
 	let pending: AnyComponent[] = [];
 	let neutralAfterPending: AnyComponent[] = [];
 
-	function pushFold(items: AnyComponent[]) {
+	function pushFold(items: AnyComponent[], resumed = false) {
 		const header = foldSummary(items, theme);
+		const retained: AnyComponent[] = [];
+		// Only later work makes a fetch failure retry noise.
+		for (let i = items.length - 1; i >= 0; i--) {
+			const item = items[i]!;
+			const kind = diagnosticKind(item);
+			if ((!header || kind !== undefined) && (kind !== "fetch failed" || !resumed)) retained.push(item);
+			if (isToolExecution(item) || assistantHasThinking(item)) resumed = true;
+		}
 		if (header) output.push(header);
+		output.push(...retained.reverse());
 	}
 
 	for (const child of normalized) {
-		if (isFoldable(child)) {
+		if (isFoldable(child) || diagnosticKind(child) !== undefined) {
 			pending.push(...neutralAfterPending, child);
 			neutralAfterPending = [];
 			continue;
 		}
 
-		if (isUserBoundary(child) || isAssistantBoundary(child)) {
-			pushFold(pending);
+		if (isUserBoundary(child) || assistantHasText(child)) {
+			pushFold(pending, assistantHasText(child));
 			pending = [];
 			output.push(...neutralAfterPending, child);
 			neutralAfterPending = [];
