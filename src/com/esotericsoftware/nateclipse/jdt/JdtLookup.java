@@ -35,7 +35,7 @@ public class JdtLookup {
 	private JdtLookup () {
 	}
 
-	/** Resolve a type name that may be unqualified. Returns null if it responded with an error. */
+	/** Resolve a type name or {@code FQN path} selector. Returns null if it responded with an error. */
 	public static IType resolveTypeOrError (Exchange exchange, String projectName, String typeName) throws Exception {
 		var fileTypes = typesForFilePath(projectName, typeName);
 		if (fileTypes != null) {
@@ -44,63 +44,33 @@ public class JdtLookup {
 				error(exchange, 404, "No Java types in file: " + typeName);
 				return null;
 			}
-			ambiguousTypes(exchange, "Ambiguous file types, use fully qualified name:\n", fileTypes);
+			ambiguousTypes(exchange, fileTypes);
 			return null;
 		}
 
-		boolean hasWildcards = typeName.contains("*") || typeName.contains("?");
-
-		// FQN without wildcards: try direct lookup first (fast path for the common case).
-		if (typeName.contains(".") && !hasWildcards) {
-			var type = findType(projectName, typeName);
-			if (type != null) return type;
-			// Fall through to search: handles unqualified nested references like "Outer.Inner".
-		}
-
-		// Search: exact or pattern match.
-		int matchRule = hasWildcards ? SearchPattern.R_PATTERN_MATCH | SearchPattern.R_CASE_SENSITIVE
-			: SearchPattern.R_EXACT_MATCH | SearchPattern.R_CASE_SENSITIVE;
-		var pattern = SearchPattern.createPattern(typeName, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS,
-			matchRule);
-		var scope = searchScope(projectName);
-		var types = new ArrayList<IType>();
-		search(pattern, scope, sourceTypeCollector(types));
-
-		// No hit: retry with '.' and '$' swapped so "Outer.Inner" and "Outer$Inner" are interchangeable.
-		if (types.isEmpty() && !hasWildcards && (typeName.indexOf('.') >= 0 || typeName.indexOf('$') >= 0)) {
-			String swapped = typeName.indexOf('$') >= 0 ? typeName.replace('$', '.') : typeName.replace('.', '$');
-			var alt = SearchPattern.createPattern(swapped, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS, matchRule);
-			search(alt, scope, sourceTypeCollector(types));
-		}
-
+		var types = searchTypes(projectName, typeName);
 		if (types.size() == 1) return types.get(0);
 		if (types.isEmpty()) {
+			if (typeName.contains(".") && !typeName.contains("*") && !typeName.contains("?")) {
+				var type = findType(projectName, typeName);
+				if (type != null) return type;
+			}
 			error(exchange, 404, "Type not found: " + typeName);
 			return null;
 		}
 
-		// Multiple matches: list FQNs, capped so broad patterns don't flood the client.
-		ambiguousTypes(exchange, "Ambiguous, use fully qualified name:\n", types);
+		ambiguousTypes(exchange, types);
 		return null;
 	}
 
-	/** Search for types by simple name, FQN, or wildcard pattern. Source types only. */
+	/** Search source types by name, wildcard pattern, or {@code FQN path} selector. */
 	public static ArrayList<IType> searchTypes (String projectName, String typeName) throws CoreException {
 		var fileTypes = typesForFilePath(projectName, typeName);
 		if (fileTypes != null) return fileTypes;
 
 		boolean hasWildcards = typeName.contains("*") || typeName.contains("?");
 
-		// FQN exact match: direct lookup first.
-		if (typeName.contains(".") && !hasWildcards) {
-			var type = findType(projectName, typeName);
-			if (type != null && !type.isBinary()) {
-				var types = new ArrayList<IType>();
-				types.add(type);
-				return types;
-			}
-		}
-
+		// Search before direct lookup: an FQN can name distinct source declarations.
 		int matchRule = hasWildcards ? SearchPattern.R_PATTERN_MATCH | SearchPattern.R_CASE_SENSITIVE
 			: SearchPattern.R_EXACT_MATCH | SearchPattern.R_CASE_SENSITIVE;
 		var pattern = SearchPattern.createPattern(typeName, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS,
@@ -115,15 +85,58 @@ public class JdtLookup {
 			var alt = SearchPattern.createPattern(swapped, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS, matchRule);
 			search(alt, scope, sourceTypeCollector(types));
 		}
-		return types;
+		if (!hasWildcards && (typeName.indexOf('.') >= 0 || typeName.indexOf('$') >= 0)) {
+			// Qualified searches can hide shadowed source roots.
+			String qualifiedName = typeName.replace('$', '.');
+			String simpleName = qualifiedName.substring(qualifiedName.lastIndexOf('.') + 1);
+			var candidates = new ArrayList<IType>();
+			var simple = SearchPattern.createPattern(simpleName, IJavaSearchConstants.TYPE, IJavaSearchConstants.DECLARATIONS,
+				matchRule);
+			search(simple, scope, sourceTypeCollector(candidates));
+			for (var type : candidates)
+				if (type.getFullyQualifiedName('.').equals(qualifiedName) || type.getTypeQualifiedName('.').equals(qualifiedName))
+					types.add(type);
+			var exact = new ArrayList<IType>();
+			for (var type : types)
+				if (type.getFullyQualifiedName().equals(typeName) || type.getFullyQualifiedName('.').equals(typeName)) exact.add(type);
+			if (!exact.isEmpty()) types = exact;
+		}
+		if (types.isEmpty() && typeName.contains(".") && !hasWildcards) {
+			var type = findType(projectName, typeName);
+			if (type != null && !type.isBinary()) types.add(type);
+		}
+		return deduplicateTypes(types);
 	}
 
-	private static void ambiguousTypes (Exchange exchange, String prefix, ArrayList<IType> types) throws Exception {
-		var sb = new StringBuilder(prefix);
+	private static ArrayList<IType> deduplicateTypes (ArrayList<IType> types) {
+		var unique = new LinkedHashMap<String, IType>();
+		for (var type : types)
+			unique.putIfAbsent(type.getFullyQualifiedName() + " " + typePath(type), type);
+		return new ArrayList<>(unique.values());
+	}
+
+	private static String typePath (IType type) {
+		var resource = type.getResource();
+		return (resource != null ? filePath(resource) : type.getPath().toOSString()).replace('\\', '/');
+	}
+
+	private static void ambiguousTypes (Exchange exchange, ArrayList<IType> types) throws Exception {
+		var names = new LinkedHashMap<String, IType>();
+		boolean paths = false;
+		for (var type : types) {
+			if (names.putIfAbsent(type.getFullyQualifiedName(), type) != null) {
+				paths = true;
+				break;
+			}
+		}
+		var sb = new StringBuilder(paths ? "Ambiguous, use one of these type values:\n"
+			: "Ambiguous, use fully qualified name:\n");
 		int shown = Math.min(types.size(), AMBIGUOUS_TYPE_MAX_SHOWN);
 		for (int i = 0; i < shown; i++) {
 			if (i > 0) sb.append("\n");
-			sb.append(types.get(i).getFullyQualifiedName());
+			var type = types.get(i);
+			sb.append(type.getFullyQualifiedName());
+			if (paths) sb.append(' ').append(typePath(type));
 		}
 		if (types.size() > shown) sb.append("\n...+").append(types.size() - shown).append(" more");
 		error(exchange, 400, sb.toString());
@@ -134,15 +147,29 @@ public class JdtLookup {
 		var value = typeName.trim();
 		if (!value.toLowerCase(Locale.ROOT).endsWith(".java")) return null;
 		var file = new File(value);
-		if (!file.isAbsolute() || !file.isFile()) return null;
+		String qualifiedName = null;
+		if (!file.isAbsolute()) {
+			int separator = 0;
+			while (separator < value.length() && !Character.isWhitespace(value.charAt(separator)))
+				separator++;
+			if (separator == value.length()) return null;
+			qualifiedName = value.substring(0, separator);
+			file = new File(value.substring(separator).trim());
+			if (!file.isAbsolute()) return null;
+		}
 
+		var types = new ArrayList<IType>();
+		if (!file.isFile()) return types;
 		var ifile = ResourcesPlugin.getWorkspace().getRoot().getFileForLocation(Path.fromOSString(file.getAbsolutePath()));
-		if (ifile == null || !ifile.exists()) return new ArrayList<>();
-		if (projectName != null && !projectName.isEmpty() && !ifile.getProject().getName().equals(projectName))
-			return new ArrayList<>();
+		if (ifile == null || !ifile.exists()) return types;
+		if (projectName != null && !projectName.isEmpty() && !ifile.getProject().getName().equals(projectName)) return types;
 		var javaElement = JavaCore.create(ifile);
-		if (!(javaElement instanceof ICompilationUnit cu)) return new ArrayList<>();
-		return primaryTypes(cu, file.getName());
+		if (!(javaElement instanceof ICompilationUnit cu)) return types;
+		if (qualifiedName == null) return deduplicateTypes(primaryTypes(cu, file.getName()));
+		for (var type : cu.getAllTypes())
+			if (type.exists() && (type.getFullyQualifiedName().equals(qualifiedName)
+				|| type.getFullyQualifiedName('.').equals(qualifiedName))) types.add(type);
+		return deduplicateTypes(types);
 	}
 
 	private static ArrayList<IType> primaryTypes (ICompilationUnit cu, String fileName) throws JavaModelException {
