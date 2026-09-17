@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, isKeyRepeat, matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
+import { isKeyRelease, isKeyRepeat, matchesKey, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
+import { relative, resolve } from "node:path";
 
 const PROBE_WIDGET_KEY = "auto-turn-filter-probe";
 const RUNTIME_KEY = "__piAutoTurnFilterRuntime";
@@ -46,21 +48,27 @@ class HeaderComponent implements Component {
 		private readonly toolCallCount: number,
 		private readonly failedCount: number,
 		private readonly toolNames: Map<string, number>,
+		private readonly editedFiles: string[],
 		private readonly theme: any,
 	) {}
 
-	render(): string[] {
+	render(width: number): string[] {
 		const label =
 			this.toolCallCount > 0
 				? `${this.toolCallCount} tool call${this.toolCallCount === 1 ? "" : "s"}`
 				: "thoughts";
 		const fg = (color: string, text: string) => (this.theme?.fg ? this.theme.fg(color, text) : text);
+		const priority = (name: string) => name === "edit" ? 0 : name === "write" ? 1 : 2;
 		const parts = [...this.toolNames]
-			.sort(([a], [b]) => (a === "edit" ? -1 : b === "edit" ? 1 : a.localeCompare(b)))
-			.map(([name, count]) => (name === "edit" ? fg("warning", `${name} ${count}x`) : fg("muted", name)));
+			.sort(([a], [b]) => priority(a) - priority(b) || a.localeCompare(b))
+			.map(([name, count]) => (name === "edit" || name === "write" ? fg("warning", `${name} ${count}x`) : fg("muted", name)));
 		const names = parts.length > 0 ? fg("muted", ": ") + parts.join(fg("muted", ", ")) : "";
 		const failed = this.failedCount > 0 ? fg("muted", " · ") + fg("error", `${this.failedCount} failed`) : "";
-		return ["", fg("muted", `▸ ${label}`) + names + failed];
+		return [
+			"",
+			fg("muted", `▸ ${label}`) + names + failed,
+			...this.editedFiles.map((file) => fg("success", file)),
+		].flatMap((line) => wrapTextWithAnsi(line, width));
 	}
 }
 
@@ -284,23 +292,42 @@ function renderComponents(components: AnyComponent[], width: number): string[] {
 	return lines;
 }
 
+function editedFile(item: AnyComponent): string | undefined {
+	if (item.toolName !== "edit" && item.toolName !== "write") return undefined;
+	if (!item.result || item.result.isError || item.isPartial) return undefined;
+	const path = item.args?.path ?? item.args?.file_path;
+	if (typeof path !== "string" || !path) return undefined;
+
+	let file = path.replace(/^@/, "").replace(/\\/g, "/");
+	if (file === "~" || file.startsWith("~/")) file = homedir() + file.slice(1);
+	if (process.platform === "win32") file = file.replace(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?=\/|$)/i, "$1:");
+	const cwd = item.cwd ?? process.cwd();
+	return relative(cwd, resolve(cwd, file)).replace(/\\/g, "/");
+}
+
 function foldSummary(items: AnyComponent[], theme: any): AnyComponent | undefined {
 	let toolCount = 0;
 	let failedCount = 0;
 	let hasThinking = false;
 	const toolNames = new Map<string, number>();
+	const editedFiles = new Map<string, string>();
 	for (const item of items) {
 		if (isToolExecution(item)) {
 			toolCount++;
 			if (item.result?.isError) failedCount++;
 			if (typeof item.toolName === "string") toolNames.set(item.toolName, (toolNames.get(item.toolName) ?? 0) + 1);
+			const file = editedFile(item);
+			if (file) {
+				const key = process.platform === "win32" ? file.toLowerCase() : file;
+				if (!editedFiles.has(key)) editedFiles.set(key, file);
+			}
 		} else if (assistantHasThinking(item)) {
 			hasThinking = true;
 		}
 	}
 	// Tool-call markers alone have nothing to summarize.
 	if (toolCount === 0 && !hasThinking) return undefined;
-	return new HeaderComponent(toolCount, failedCount, toolNames, theme) as AnyComponent;
+	return new HeaderComponent(toolCount, failedCount, toolNames, [...editedFiles.values()], theme) as AnyComponent;
 }
 
 function renderFolded(children: AnyComponent[], width: number, theme: any, foldTail: boolean): string[] {
