@@ -8,9 +8,10 @@ type UsageWindowSnapshot = {
 	resetInSeconds: number | null;
 };
 
+// Null when the plan has no such window.
 type UsageSnapshot = {
-	fiveHour: UsageWindowSnapshot;
-	weekly: UsageWindowSnapshot;
+	fiveHour: UsageWindowSnapshot | null;
+	weekly: UsageWindowSnapshot | null;
 };
 
 type AuthEntry = {
@@ -63,7 +64,8 @@ function formatUsageWindow(window: UsageWindowSnapshot): string {
 
 function formatUsagePair(usage: UsageSnapshot): string {
 	// Weekly first, then 5-hour, matching the reset durations users care about most.
-	return `${formatUsageWindow(usage.weekly)} ${formatUsageWindow(usage.fiveHour)}`;
+	const windows = [usage.weekly, usage.fiveHour].filter((window) => window !== null);
+	return windows.length ? windows.map(formatUsageWindow).join(" ") : "--";
 }
 
 function formatStatus(ctx: ExtensionContext, label: string, usage: UsageSnapshot): string {
@@ -154,6 +156,7 @@ function getFailureCooldownMs(error: unknown): number {
 
 type UsageWindow = {
 	used_percent?: number | null;
+	limit_window_seconds?: number | null;
 	reset_after_seconds?: number | null;
 	reset_at?: number | null;
 };
@@ -178,6 +181,7 @@ const SPARK_MODEL_ID = "gpt-5.3-codex-spark";
 const SPARK_LIMIT_NAME = "GPT-5.3-Codex-Spark";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_USAGE_TTL_MS = 60_000;
+const DAY_SECONDS = 86_400;
 const CODEX_MISSING_AUTH_PREFIX = "Missing openai-codex OAuth access/accountId";
 
 function isCodexModel(model: ExtensionContext["model"]): boolean {
@@ -289,11 +293,20 @@ function parseCodexWindow(window: UsageWindow | null | undefined, fetchedAtMs: n
 }
 
 function parseCodexSnapshot(data: CodexUsageResponse, modelId: string | undefined, fetchedAtMs: number): UsageSnapshot {
-	const selectedBucket = selectCodexRateLimitBucket(data, modelId);
-	return {
-		fiveHour: parseCodexWindow(selectedBucket?.primary_window, fetchedAtMs),
-		weekly: parseCodexWindow(selectedBucket?.secondary_window, fetchedAtMs),
-	};
+	const bucket = selectCodexRateLimitBucket(data, modelId);
+	const snapshot: UsageSnapshot = { fiveHour: null, weekly: null };
+	// Plans without a 5-hour limit report the weekly window as primary, so classify windows by duration.
+	const windows = [
+		[bucket?.primary_window, false],
+		[bucket?.secondary_window, true],
+	] as const;
+	for (const [window, isSecondary] of windows) {
+		if (!window) continue;
+		const seconds = window.limit_window_seconds;
+		const weekly = typeof seconds === "number" ? seconds >= DAY_SECONDS : isSecondary;
+		snapshot[weekly ? "weekly" : "fiveHour"] = parseCodexWindow(window, fetchedAtMs);
+	}
+	return snapshot;
 }
 
 // === Claude (Anthropic OAuth, Pro/Max) ==================================
