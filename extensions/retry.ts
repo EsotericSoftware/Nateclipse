@@ -14,7 +14,8 @@ import { join } from "node:path";
  *		backoff and re-invoke the LLM. The failed assistant message is already
  *		stripped from LLM context by pi's `transform-messages` (it skips any
  *		assistant message with stopReason "error" or "aborted"). We just need
- *		to send a hidden trigger to kick off a new turn.
+ *		to send a hidden trigger to kick off a new turn. Usage limit errors are
+ *		retried slowly for a while, in case the limit is reset (eg a banked reset).
  *
  * 2. **Manual retry** — `/retry` command or pressing Enter on an empty
  *		editor retries the last prompt. Works for any aborted/errored
@@ -42,6 +43,10 @@ const RETRY_CUSTOM_TYPE = "__retry_trigger";
 
 // Errors we retry that the built-in doesn't cover.
 const RETRYABLE_PATTERNS = /\baborted\b/i;
+
+const USAGE_LIMIT_PATTERN = /usage limit/i;
+const USAGE_LIMIT_MAX_RETRIES = 60;
+const USAGE_LIMIT_DELAY_MS = 30_000;
 
 // Patterns already handled by pi's built-in retry — don't double-retry.
 const BUILTIN_RETRY_PATTERNS =
@@ -126,13 +131,11 @@ export default function piRetry(pi: ExtensionAPI) {
 	let retryAttempt = 0;
 	let lastErrorMessage = "";
 	let lastStopReason = "";
+	let lastMaxRetries = MAX_RETRIES;
 
 	// -- Shared state: track whether last response was an error/abort --
 	// Used by the manual retry path to know if there's something to retry.
 	let lastResponseWasError = false;
-
-	// Track pending retry triggers so we can strip them from context.
-	let pendingRetryCleanup = false;
 
 	// TUI reference, captured via a no-op widget during session_start.
 	let tuiRef: TUI | null = null;
@@ -162,7 +165,7 @@ export default function piRetry(pi: ExtensionAPI) {
 					stopReason: lastStopReason,
 					errorMessage: lastErrorMessage,
 					attempt: retryAttempt,
-					maxRetries: MAX_RETRIES,
+					maxRetries: lastMaxRetries,
 					cwd: ctx.cwd,
 					sessionId: ctx.sessionManager.getSessionId(),
 					...getContextFields(ctx),
@@ -213,15 +216,17 @@ export default function piRetry(pi: ExtensionAPI) {
 		if (BUILTIN_RETRY_PATTERNS.test(errorMessage)) return;
 
 		// Check our patterns.
-		if (!RETRYABLE_PATTERNS.test(errorMessage)) return;
+		const usageLimit = USAGE_LIMIT_PATTERN.test(errorMessage);
+		if (!usageLimit && !RETRYABLE_PATTERNS.test(errorMessage)) return;
 
 		retryAttempt++;
 		lastErrorMessage = errorMessage;
 		lastStopReason = stopReason;
+		lastMaxRetries = usageLimit ? USAGE_LIMIT_MAX_RETRIES : MAX_RETRIES;
 
 		const model = ctx.model;
 
-		if (retryAttempt > MAX_RETRIES) {
+		if (retryAttempt > lastMaxRetries) {
 			logRetryEvent({
 				timestamp: new Date().toISOString(),
 				event: "retry_exhausted",
@@ -233,7 +238,7 @@ export default function piRetry(pi: ExtensionAPI) {
 				stopReason,
 				errorMessage,
 				attempt: retryAttempt - 1,
-				maxRetries: MAX_RETRIES,
+				maxRetries: lastMaxRetries,
 				cwd: ctx.cwd,
 				sessionId: ctx.sessionManager.getSessionId(),
 				messageCount: messages.length,
@@ -241,7 +246,7 @@ export default function piRetry(pi: ExtensionAPI) {
 			});
 
 			ctx.ui.notify(
-				`Stream error persisted after ${MAX_RETRIES} retries: ${errorMessage}`,
+				`Stream error persisted after ${lastMaxRetries} retries: ${errorMessage}`,
 				"error",
 			);
 			ctx.ui.setStatus("pi-retry", undefined);
@@ -251,7 +256,7 @@ export default function piRetry(pi: ExtensionAPI) {
 			return;
 		}
 
-		const delayMs = BASE_DELAY_MS * 2 ** (retryAttempt - 1);
+		const delayMs = usageLimit ? USAGE_LIMIT_DELAY_MS : BASE_DELAY_MS * 2 ** (retryAttempt - 1);
 
 		logRetryEvent({
 			timestamp: new Date().toISOString(),
@@ -264,7 +269,7 @@ export default function piRetry(pi: ExtensionAPI) {
 			stopReason,
 			errorMessage,
 			attempt: retryAttempt,
-			maxRetries: MAX_RETRIES,
+			maxRetries: lastMaxRetries,
 			delayMs,
 			cwd: ctx.cwd,
 			sessionId: ctx.sessionManager.getSessionId(),
@@ -274,7 +279,7 @@ export default function piRetry(pi: ExtensionAPI) {
 
 		ctx.ui.setStatus(
 			"pi-retry",
-			`Stream error "${errorMessage}", retrying (${retryAttempt}/${MAX_RETRIES}) in ${(delayMs / 1000).toFixed(0)}s…`,
+			`Stream error "${errorMessage}", retrying (${retryAttempt}/${lastMaxRetries}) in ${(delayMs / 1000).toFixed(0)}s…`,
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -372,29 +377,22 @@ export default function piRetry(pi: ExtensionAPI) {
 	});
 
 	// -----------------------------------------------------------------------
-	// Context cleanup: strip our hidden trigger messages before LLM sees them.
+	// Context cleanup: strip our hidden trigger messages before LLM sees them,
+	// on every request so later turns don't see them either.
 	// transform-messages already strips the aborted assistant message, so we
 	// only need to remove our custom trigger.
 	// -----------------------------------------------------------------------
 	pi.on("context", async (event) => {
-		if (!pendingRetryCleanup) return;
-		pendingRetryCleanup = false;
-
-		const cleaned = event.messages.filter((msg: any) => {
-			if (msg.role === "custom" && msg.customType === RETRY_CUSTOM_TYPE) {
-				return false;
-			}
-			return true;
-		});
-
-		return { messages: cleaned };
+		const cleaned = event.messages.filter(
+			(msg: any) => !(msg.role === "custom" && msg.customType === RETRY_CUSTOM_TYPE),
+		);
+		if (cleaned.length !== event.messages.length) return { messages: cleaned };
 	});
 
 	// -----------------------------------------------------------------------
 	// Helper: send the hidden retry trigger
 	// -----------------------------------------------------------------------
 	function triggerRetry(pi: ExtensionAPI) {
-		pendingRetryCleanup = true;
 		pi.sendMessage(
 			{
 				customType: RETRY_CUSTOM_TYPE,
