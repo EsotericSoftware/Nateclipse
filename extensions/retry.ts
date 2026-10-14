@@ -36,13 +36,13 @@ import { join } from "node:path";
 // Config
 // ---------------------------------------------------------------------------
 
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 50;
 const BASE_DELAY_MS = 2000;
 
 const RETRY_CUSTOM_TYPE = "__retry_trigger";
 
 // Errors we retry that the built-in doesn't cover.
-const RETRYABLE_PATTERNS = /\baborted\b/i;
+const RETRYABLE_PATTERNS = /\baborted\b|\bno healthy upstream\b/i;
 
 const USAGE_LIMIT_PATTERN = /usage limit/i;
 const USAGE_LIMIT_MAX_RETRIES = 60;

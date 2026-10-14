@@ -17,7 +17,7 @@ Nateclipse gives Pi tools so the LLM can talk to Eclipse instead of blundering a
 - When AI needs to read a method, normally it'll `grep`, then read a chunk from that offset. It almost always undershoots and wastes tokens or overshoots and needs more turns. With Nateclipse `java_method` gives it the method source in one go.
 - Giving Eclipse IDE tools to AI makes it more efficient and accurate: find references, find callers/callees, see class hierarchy, list all members. So far it doesn't get renaming or other refactoring tools, only read only tools.
 - Nateclipse makes `ctrl+space` Java type and member completion work at the Pi prompt.
-- Included are a few other Pi extensions which I consider crucial for any Pi usage, even though they are not related to Eclipse. In particular `filter.ts` has made using Pi a lot more comfortable. It collapses AI thinking and tool usage for past turns. It can be toggled off when you want to see that stuff, but in practice often that's not needed.
+- Included are a few other Pi extensions which I consider crucial for any Pi usage, even though they are not related to Eclipse. In particular `fold.ts` has made using Pi a lot more comfortable. It collapses AI thinking and tool usage for past turns. It can be toggled off when you want to see that stuff, but in practice often that's not needed.
 - Also included are improvements to completion and type lookup inside Eclipse, as well as better editor tab sizing.
 
 ## Installation
@@ -63,9 +63,11 @@ Also, at the Pi prompt press `ctrl+space` to complete type names, just like in E
 
 ![](https://github.com/EsotericSoftware/Nateclipse/blob/main/screenshots/members.png?raw=true)
 
-### filter.ts
+### fold.ts
 
-This extension collapses agent turns once they are complete, greatly reducing session history noise. `ctrl+F` to toggle, for when you actually need to read that junk.
+This extension collapses agent turns once they are complete, greatly reducing session history noise. `ctrl+f` or `/fold` cycles between folding completed turns, also folding live work, and showing everything, for when you actually need to read that junk. `/fold on|all|off` sets the mode directly.
+
+Pi's fullscreen transcript search moves to `ctrl+shift+f`, unless `tui.altScreen.search` is set in `keybindings.json`.
 
 ### usage.ts
 
@@ -93,7 +95,7 @@ This extension automatically retries if the agent fails with a retryable error n
 
 ### read.ts
 
-This extension delegates to Pi's read tool, so it provides the exact same functionality, but it renders using styling consistent with all other Nateclipse tools. With `filter.ts` you'll rarely look at it anyway.
+This extension delegates to Pi's read tool, so it provides the exact same functionality, but it renders using styling consistent with all other Nateclipse tools. With `fold.ts` you'll rarely look at it anyway.
 
 ## Completion sorting
 

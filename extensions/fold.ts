@@ -1,24 +1,67 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, isKeyRepeat, matchesKey, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	getKeybindings, isKeyRelease, isKeyRepeat, matchesKey, wrapTextWithAnsi,
+	type Component, type KeybindingsConfig, type KeybindingsManager, type TUI,
+} from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { relative, resolve } from "node:path";
 
-const PROBE_WIDGET_KEY = "auto-turn-filter-probe";
-const RUNTIME_KEY = "__piAutoTurnFilterRuntime";
+const PROBE_WIDGET_KEY = "fold-probe";
+const RUNTIME_KEY = "__piFoldRuntime";
+const FOLD_KEY = "ctrl+f";
+const SEARCH_BINDING = "tui.altScreen.search";
+const SEARCH_KEY = "ctrl+shift+f";
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 const ERROR_OR_WARNING_RE = /^(Error|Warning):\s/;
 
-// fold: tool runs between prose collapse, live work shows raw.
-// fold all: live work collapses too.
-type FilterMode = "fold" | "fold all" | "off";
-const FILTER_MODES: readonly FilterMode[] = ["fold", "fold all", "off"];
+// on: tool runs between prose collapse, live work shows raw.
+// all: live work collapses too.
+type FoldMode = "on" | "all" | "off";
+const FOLD_MODES: readonly FoldMode[] = ["on", "all", "off"];
+const FOLD_MODE_DESCRIPTIONS: Record<FoldMode, string> = {
+	on: "Fold completed turns",
+	all: "Fold completed turns and live work",
+	off: "Show everything",
+};
 
 type AnyComponent = Component & Record<string, any>;
 type ContainerLike = AnyComponent & { children: AnyComponent[] };
 
 type PatchedContainer = ContainerLike & {
-	__piFilterOriginalRender?: (width: number) => string[];
+	__piFoldOriginalRender?: (width: number) => string[];
 };
+
+type PatchedKeybindings = KeybindingsManager & {
+	__piFoldOriginalSetUserBindings?: (bindings: KeybindingsConfig) => void;
+	__piFoldUserBindings?: KeybindingsConfig;
+};
+
+// Windows defaults transcript search to ctrl+f, and the alt-screen input listener runs before
+// extension listeners, so search would shadow fold. Move search to ctrl+shift+f unless
+// keybindings.json sets it. Pi reloads keybindings after session_start on /reload, so the
+// override wraps setUserBindings rather than being applied once.
+function patchKeybindings(): void {
+	const keybindings = getKeybindings() as PatchedKeybindings;
+	const original = keybindings.__piFoldOriginalSetUserBindings ?? keybindings.setUserBindings.bind(keybindings);
+	keybindings.__piFoldOriginalSetUserBindings = original;
+	const userBindings = keybindings.__piFoldUserBindings ?? keybindings.getUserBindings();
+	keybindings.setUserBindings = (bindings: KeybindingsConfig) => {
+		keybindings.__piFoldUserBindings = bindings;
+		original(bindings[SEARCH_BINDING] === undefined ? { ...bindings, [SEARCH_BINDING]: SEARCH_KEY } : bindings);
+	};
+	keybindings.setUserBindings(userBindings);
+}
+
+function unpatchKeybindings(): void {
+	const keybindings = getKeybindings() as PatchedKeybindings;
+	if (!keybindings.__piFoldOriginalSetUserBindings) return;
+	const userBindings = keybindings.__piFoldUserBindings ?? keybindings.getUserBindings();
+	// Removing the instance overrides restores the prototype method.
+	delete (keybindings as Partial<PatchedKeybindings>).setUserBindings;
+	delete keybindings.__piFoldOriginalSetUserBindings;
+	delete keybindings.__piFoldUserBindings;
+	keybindings.setUserBindings(userBindings);
+}
 
 type PieceCacheEntry = {
 	message: any;
@@ -115,9 +158,10 @@ function diagnosticKind(component: AnyComponent): "fetch failed" | "other" | und
 	return /^Error:\s+fetch failed$/i.test(text) ? "fetch failed" : "other";
 }
 
-function isUserBoundary(component: AnyComponent): boolean {
+function isFoldBoundary(component: AnyComponent): boolean {
 	const name = component?.constructor?.name;
-	return name === "UserMessageComponent" || name === "SkillInvocationMessageComponent";
+	return name === "UserMessageComponent" || name === "SkillInvocationMessageComponent"
+		|| name === "CompactionSummaryMessageComponent";
 }
 
 function isToolExecution(component: AnyComponent): boolean {
@@ -132,7 +176,7 @@ function isFoldable(component: AnyComponent): boolean {
 
 function isChatLike(container: ContainerLike): boolean {
 	return container.children.some(
-		(child) => isUserBoundary(child) || assistantHasText(child) || isToolExecution(child)
+		(child) => isFoldBoundary(child) || assistantHasText(child) || isToolExecution(child)
 			|| assistantHasThinking(child) || diagnosticKind(child) !== undefined,
 	);
 }
@@ -357,7 +401,7 @@ function renderFolded(children: AnyComponent[], width: number, theme: any, foldT
 			continue;
 		}
 
-		if (isUserBoundary(child) || assistantHasText(child)) {
+		if (isFoldBoundary(child) || assistantHasText(child)) {
 			pushFold(pending, assistantHasText(child));
 			pending = [];
 			output.push(...neutralAfterPending, child);
@@ -372,7 +416,7 @@ function renderFolded(children: AnyComponent[], width: number, theme: any, foldT
 		}
 	}
 
-	// No following user/assistant prose yet: this is live/current intermediate work.
+	// No following boundary or prose yet: this is live/current intermediate work.
 	if (foldTail) {
 		pushFold(pending);
 		output.push(...neutralAfterPending);
@@ -407,7 +451,7 @@ export default function (pi: ExtensionAPI) {
 
 	let tui: (TUI & { children?: AnyComponent[]; requestRender?: () => void }) | undefined;
 	let theme: any;
-	let mode: FilterMode = "fold";
+	let mode: FoldMode = "on";
 	let runtimeActive = false;
 	let renderQueued = false;
 
@@ -431,13 +475,13 @@ export default function (pi: ExtensionAPI) {
 		// /reload keeps the same TUI/container instances. If a previous runtime
 		// already patched this container, reuse its saved original render and
 		// replace the stale wrapper with this runtime's wrapper.
-		const original = target.__piFilterOriginalRender ?? target.render.bind(target);
-		target.__piFilterOriginalRender = original;
+		const original = target.__piFoldOriginalRender ?? target.render.bind(target);
+		target.__piFoldOriginalRender = original;
 		target.render = (width: number) => {
 			if (!isCurrentRuntime() || mode === "off" || !isChatLike(target)) {
 				return original(width);
 			}
-			return renderFolded(target.children, width, theme, mode === "fold all");
+			return renderFolded(target.children, width, theme, mode === "all");
 		};
 	}
 
@@ -452,6 +496,38 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 	}
+
+	function setMode(next: FoldMode, ui: ExtensionContext["ui"]) {
+		mode = next;
+		if (mode === "off") applyToolExpansion(ui.getToolsExpanded());
+		ui.notify(`Fold: ${mode}`, "info");
+		requestRender();
+	}
+
+	function nextMode(): FoldMode {
+		return FOLD_MODES[(FOLD_MODES.indexOf(mode) + 1) % FOLD_MODES.length]!;
+	}
+
+	pi.registerCommand("fold", {
+		description: `Cycle or set folding of completed turns (${FOLD_KEY})`,
+		getArgumentCompletions: (prefix) => {
+			const items = FOLD_MODES.filter((m) => m.startsWith(prefix.trim()))
+				.map((m) => ({ value: m, label: m, description: FOLD_MODE_DESCRIPTIONS[m] }));
+			return items.length > 0 ? items : null;
+		},
+		handler: async (args, ctx) => {
+			if (!isCurrentRuntime()) {
+				ctx.ui.notify("/fold requires the interactive TUI", "warning");
+				return;
+			}
+			const arg = args.trim().toLowerCase();
+			if (arg && !FOLD_MODES.includes(arg as FoldMode)) {
+				ctx.ui.notify(`Usage: /fold [${FOLD_MODES.join("|")}]`, "error");
+				return;
+			}
+			setMode(arg ? (arg as FoldMode) : nextMode(), ctx.ui);
+		},
+	});
 
 	// Registered once per extension load so repeated session_starts
 	// don't stack duplicate handlers.
@@ -476,6 +552,7 @@ export default function (pi: ExtensionAPI) {
 		if ((globalThis as any)[RUNTIME_KEY] === runtimeId) {
 			(globalThis as any)[RUNTIME_KEY] = undefined;
 		}
+		if (runtimeActive) unpatchKeybindings();
 		runtimeActive = false;
 		unsubscribeInput?.();
 		unsubscribeInput = undefined;
@@ -485,7 +562,8 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode !== "tui") return;
 
 		runtimeActive = true;
-		mode = "fold";
+		mode = "on";
+		patchKeybindings();
 
 		ctx.ui.setWidget(PROBE_WIDGET_KEY, (capturedTui, capturedTheme) => {
 			tui = capturedTui as typeof tui;
@@ -512,16 +590,13 @@ export default function (pi: ExtensionAPI) {
 		unsubscribeInput = ctx.ui.onTerminalInput((data) => {
 			if (!isCurrentRuntime()) return undefined;
 
-			if (matchesKey(data, "ctrl+f")) {
+			if (matchesKey(data, FOLD_KEY)) {
 				// The kitty keyboard protocol reports repeat/release as separate events
 				// and input listeners see them before the TUI's release filter. Acting on
 				// both press and release toggled twice per keystroke (a net no-op).
 				// Swallow non-press events for the key we own, but only toggle on press.
 				if (isKeyRelease(data) || isKeyRepeat(data)) return { consume: true };
-				mode = FILTER_MODES[(FILTER_MODES.indexOf(mode) + 1) % FILTER_MODES.length]!;
-				if (mode === "off") applyToolExpansion(ctx.ui.getToolsExpanded());
-				ctx.ui.notify(`Filter: ${mode}`, "info");
-				requestRender();
+				setMode(nextMode(), ctx.ui);
 				return { consume: true };
 			}
 			if (matchesKey(data, "ctrl+o")) {

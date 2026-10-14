@@ -18,7 +18,7 @@ import org.eclipse.swt.widgets.Shell;
 import com.esotericsoftware.nateclipse.utils.TypeRanking.Classification;
 import com.esotericsoftware.nateclipse.utils.TypeRanking.Origin;
 
-/** {@link FilteredTypesSelectionDialog} subclass that re-ranks candidates using {@link TypeRanking}.
+/** {@link FilteredTypesSelectionDialog} subclass that puts exact names first, then ranks candidates using {@link TypeRanking}.
  * <p>
  * This reaches into an internal JDT UI class; the access is tolerated via "discouraged reference" warnings. */
 @SuppressWarnings("restriction")
@@ -26,6 +26,8 @@ public class RankedTypeDialog extends FilteredTypesSelectionDialog {
 	static private final ILog log = Platform.getLog(RankedTypeDialog.class);
 
 	private final String activeProject;
+	/** Captured on the UI thread; sorting runs in background jobs. */
+	private volatile String searchPattern = "";
 
 	public RankedTypeDialog (Shell shell, boolean multi, IRunnableContext context, IJavaSearchScope scope, int elementKinds,
 		String activeProject) {
@@ -34,26 +36,53 @@ public class RankedTypeDialog extends FilteredTypesSelectionDialog {
 	}
 
 	@Override
+	protected ItemsFilter createFilter () {
+		String text = getOriginalPatternText();
+		searchPattern = text == null ? "" : text.trim();
+		return super.createFilter();
+	}
+
+	@Override
+	public boolean isHistoryElement (Object item) {
+		// Our MRU ranking handles searches; Eclipse's history-first grouping would bury exact matches.
+		String pattern = searchPattern;
+		return (pattern.isEmpty() || pattern.equals("*")) && super.isHistoryElement(item);
+	}
+
+	@Override
 	protected Comparator<?> getItemsComparator () {
-		return new TypeNameMatchComparator(activeProject);
+		return new TypeNameMatchComparator(activeProject, searchPattern);
 	}
 
 	/** Comparator works on {@link TypeNameMatch} items (what FilteredTypesSelectionDialog produces), but we accept {@link Object}
 	 * defensively because FilteredItemsSelectionDialog passes items through this comparator in a few places. */
 	static private final class TypeNameMatchComparator implements Comparator<Object> {
 		private final String activeProject;
+		private final String namePattern;
 
-		TypeNameMatchComparator (String activeProject) {
+		TypeNameMatchComparator (String activeProject, String pattern) {
 			this.activeProject = activeProject;
+			namePattern = pattern.substring(pattern.lastIndexOf('.') + 1);
 		}
 
 		@Override
 		public int compare (Object a, Object b) {
+			int ea = exactMatchRank(a);
+			int eb = exactMatchRank(b);
+			if (ea != eb) return ea - eb;
 			int sa = scoreOf(a);
 			int sb = scoreOf(b);
 			if (sa != sb) return sb - sa;
 			// Stable, deterministic tiebreaker by FQN so the dialog doesn't consider different items as duplicates.
 			return nameOf(a).compareToIgnoreCase(nameOf(b));
+		}
+
+		private int exactMatchRank (Object o) {
+			if (namePattern.isEmpty() || !(o instanceof TypeNameMatch match)) return 2;
+			String name = match.getSimpleTypeName();
+			if (namePattern.equals(name)) return 0;
+			if (namePattern.equalsIgnoreCase(name)) return 1;
+			return 2;
 		}
 
 		private int scoreOf (Object o) {

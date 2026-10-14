@@ -628,7 +628,8 @@ export default async function (pi: ExtensionAPI) {
 		setTimeout(() => {
 			const previous = ctx.ui.getEditorComponent();
 			ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-				const editor = previous ? previous(tui, theme, keybindings) : new CustomEditor(tui, theme, keybindings);
+				const editor = previous ? previous(tui, theme, keybindings)
+					: new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
 				const innerHandleInput = editor.handleInput.bind(editor);
 				editor.handleInput = (data: string) => {
 					if (matchesKey(data, "ctrl+space")) {
